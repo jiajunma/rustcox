@@ -16,3 +16,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "kl"
+harness = false
