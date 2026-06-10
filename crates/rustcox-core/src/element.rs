@@ -41,17 +41,6 @@ impl Perm {
         Perm(data.into_boxed_slice())
     }
 
-    /// Compose `q` followed by `self`: result[i] = self[q[i]].
-    ///
-    /// Equivalent to `q.then(self)`.  Used internally when left-multiplying
-    /// by a generator: `then(P_s, p)[i] = p[P_s[i]]`.
-    #[inline]
-    pub fn then_rev(&self, p: &Perm) -> Perm {
-        // result[i] = p[self[i]]  — i.e. "apply self first, then p"
-        // This is then(self, p).
-        self.then(p)
-    }
-
     /// Return the inverse permutation: inv[p[i]] = i.
     ///
     /// Replicates PyCox `perminverse`.

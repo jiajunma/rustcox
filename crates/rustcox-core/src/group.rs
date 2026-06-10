@@ -330,7 +330,7 @@ impl CoxeterGroup {
                     // Left-multiply by generator s:
                     // new_cur[i] = cur[permgens[s][i]]
                     // = then(permgens[s], cur)
-                    cur = self.permgens[s].then_rev(&cur);
+                    cur = self.permgens[s].then(&cur);
                     word.push(s as Gen);
                 }
             }
@@ -393,7 +393,7 @@ impl CoxeterGroup {
                     None => break,
                     Some(s) => {
                         // p ← then(permgens[s], p): new_p[i] = p[permgens[s][i]]
-                        p = self.permgens[s].then_rev(&p);
+                        p = self.permgens[s].then(&p);
                     }
                 }
             }
