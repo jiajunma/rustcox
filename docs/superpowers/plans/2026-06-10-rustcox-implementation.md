@@ -420,7 +420,7 @@ fn golden_int_arithmetic() {
     assert!(x.is_nonneg());
     assert!(!x.neg().is_nonneg());
     assert!(GoldenInt::new(2, -1).is_nonneg());        // 2−φ ≈ 0.382
-    assert!(!GoldenInt::new(1, -1).is_nonneg() == false); // 1−φ < 0 → is_nonneg false
+    assert!(!GoldenInt::new(1, -1).is_nonneg());       // 1−φ ≈ −0.618 < 0
     assert!(GoldenInt::new(0, 0).is_nonneg());
     assert!((GoldenInt::new(-1, 1).approx() - 0.618033988749895).abs() < 1e-12);
 }
@@ -492,7 +492,7 @@ fn b2_element_calculus() {
     let p = w.word_to_perm(&[0, 1, 0]);
     assert_eq!(w.perm_length(&p), 3);
     assert_eq!(w.perm_to_word(&p), vec![0, 1, 0]);          // canonical
-    assert_eq!(w.perm_to_word(&w.word_to_perm(&[1, 0, 1, 1, 0])), vec![0]); // reduces
+    assert_eq!(w.perm_to_word(&w.word_to_perm(&[1, 0, 1, 1, 0])), vec![1]); // s1·s0·s1·s1·s0 = s1
     assert_eq!(w.left_descents(&p), vec![0]);
     assert_eq!(w.right_descents(&p), vec![0]);
     let w0 = w.longest_perm();
@@ -576,8 +576,11 @@ The heart of the port. Reference: PyCox `klpolynomials` ≈10141–10380 and §1
 fn check_kl_golden(name: &str) {
     let g = common::golden(name);
     let table = /* build group from g["type"], run klpolynomials_seq with g["weights"] */;
-    let ours = rustcox_core::io::to_canonical_json(&table, &CellData::from_table(&table));
-    for key in ["elms", "pols", "klmat", "mumat"] {       // cells keys added in Task 11
+    // Task 9 stub: io::table_json(&KlTable) emits elms/pols/klmat/mumat only.
+    // Task 11 adds cells keys (CellData); Task 14 replaces the stub with the
+    // full to_canonical_json(&KlTable, &CellData) document.
+    let ours = rustcox_core::io::table_json(&table);
+    for key in ["elms", "pols", "klmat", "mumat"] {
         assert_eq!(ours[key], g[key], "{name}:{key}");
     }
 }
