@@ -22,9 +22,10 @@
 //! - If `s ∈ I(vertices[j])` and `s ∉ I(vertices[i])`: arrow `i → j`.
 //!
 //! **Type 2 — direct `s·u`:** For each vertex `u` at position `pos` and
-//! each generator `s` with `s ∉ I(u)`, if `s·u` is also in `self.vertices`,
-//! add arrow `pos → pos_of(s·u)`.  This mirrors `build_arrows`'s
-//! `(wu, sw)` emission when `sw > wu`.
+//! each generator `s`: if `weights[s] == 0` (unconditionally, even when
+//! `s ∈ I(u)`) OR (`s ∉ I(u)` ascent and `weights[s] > 0`), and
+//! `s·u ∈ self.vertices`, add arrow `pos → pos_of(s·u)`.  This mirrors
+//! `build_arrows`'s condition `weight == 0 || (sw > wu && weight > 0)` exactly.
 
 use std::collections::HashMap;
 
@@ -71,6 +72,9 @@ pub struct WGraph {
     lft_cell: Vec<u32>,
     /// Number of generators (rank).
     rank: usize,
+    /// Generator weights `L(s)` copied from the KL table.  Used by `decompose`
+    /// to determine whether a weight-0 type-2 arrow must be emitted.
+    weights: Vec<u32>,
 }
 
 impl WGraph {
@@ -146,12 +150,15 @@ impl WGraph {
             }
         }
 
+        let weights = t.weights.clone();
+
         WGraph {
             vertices,
             isets,
             edges,
             lft_cell,
             rank,
+            weights,
         }
     }
 
@@ -165,7 +172,8 @@ impl WGraph {
     /// - `s ∈ I(vertices[j])` and `s ∉ I(vertices[i])` → arrow `i → j`.
     ///
     /// **Type 2 — direct:** For each vertex `u` at position `pos` and each
-    /// generator `s` with `s ∉ I(u)`: if `s·u ∈ self.vertices`, add `pos → pos_of(s·u)`.
+    /// generator `s`: if `weights[s] == 0` (unconditionally) OR (`s ∉ I(u)` and
+    /// `weights[s] > 0`), and `s·u ∈ self.vertices`, add `pos → pos_of(s·u)`.
     ///
     /// ## Canonicalisation
     ///
@@ -231,18 +239,22 @@ impl WGraph {
 
         // Type 2: direct s·u arrows (matches build_arrows' (wu, sw) emission).
         //
-        // For each vertex u at position pos and generator s with s ∉ I(u):
-        // lft(u, s) > u (u is longer after left-mult by s).  If s·u ∈ vertices,
-        // add arrow pos → pos_of(s·u).
+        // build_arrows emits (wu, sw) when:
+        //   weight == 0   — unconditionally, even if s ∈ I(u) (descent), OR
+        //   sw > wu (ascent, s ∉ I(u)) AND weight > 0.
+        //
+        // Mirror that condition here.
         for pos in 0..n {
             for s in 0..self.rank {
                 let s_gen = s as Gen;
-                if self.isets[pos].contains(&s_gen) {
-                    continue; // s is a descent: lft(v,s) < v (shorter), not sw > w
-                }
-                let sv_pos = self.lft_cell[pos * self.rank + s];
-                if sv_pos != u32::MAX {
-                    push_unique(&mut adj, pos, sv_pos as usize);
+                let weight = self.weights[s];
+                let is_descent = self.isets[pos].contains(&s_gen);
+                // Emit arrow when weight == 0 (unconditional) OR weight > 0 AND ascent.
+                if weight == 0 || !is_descent {
+                    let sv_pos = self.lft_cell[pos * self.rank + s];
+                    if sv_pos != u32::MAX {
+                        push_unique(&mut adj, pos, sv_pos as usize);
+                    }
                 }
             }
         }
@@ -324,6 +336,7 @@ impl WGraph {
             edges,
             lft_cell,
             rank,
+            weights: self.weights.clone(),
         }
     }
 }
@@ -526,5 +539,47 @@ mod tests {
             expected_mu1.is_zero(),
             "golden: mu(s=1, y=1, w=4) should be zero"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: b2_w0_1_wgraph_decompose
+    // -----------------------------------------------------------------------
+    /// B2 with weights [0, 1]: build the full-group W-graph (all 8 elements)
+    /// and verify that decompose() produces component vertex-sets equal to
+    /// CellData::from_table lcells (both canonically sorted).
+    ///
+    /// With weight-0 generators the type-2 arrow condition must emit arrows
+    /// even for descents (weight == 0 case in build_arrows), which is the
+    /// bug fixed in this patch.
+    #[test]
+    fn b2_w0_1_wgraph_decompose() {
+        let (_, t) = build_table("B2", vec![0, 1]);
+        let cd = CellData::from_table(&t);
+        let n = t.n();
+
+        let all: Vec<ElmIdx> = (0..n as u32).collect();
+        let full_wg = WGraph::of_cell(&t, &all);
+        let mut comps = full_wg.decompose();
+
+        // Canonical sort for comparison.
+        comps.sort_by(|a, b| a.vertices.cmp(&b.vertices));
+        let mut lcells = cd.lcells.clone();
+        lcells.sort();
+
+        assert_eq!(
+            comps.len(),
+            lcells.len(),
+            "B2[0,1]: number of decompose() components ({}) != number of lcells ({})",
+            comps.len(),
+            lcells.len()
+        );
+
+        for (c, (comp, cell)) in comps.iter().zip(lcells.iter()).enumerate() {
+            assert_eq!(
+                comp.vertices, *cell,
+                "B2[0,1] component {c}: vertices {:?} != lcell {:?}",
+                comp.vertices, cell
+            );
+        }
     }
 }
