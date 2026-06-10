@@ -35,7 +35,21 @@ fn check_kl_golden(name: &str) {
 
     let ours = rustcox_core::io::table_json(&table);
     for key in ["elms", "pols", "klmat", "mumat"] {
-        assert_eq!(ours[key], g[key], "{name}:{key} mismatch");
+        let got = &ours[key];
+        let want = &g[key];
+        // For array-valued keys compare element-by-element so failures name the row.
+        if let (Some(got_rows), Some(want_rows)) = (got.as_array(), want.as_array()) {
+            assert_eq!(
+                got_rows.len(),
+                want_rows.len(),
+                "{name}:{key} length mismatch"
+            );
+            for (i, (g_row, w_row)) in got_rows.iter().zip(want_rows.iter()).enumerate() {
+                assert_eq!(g_row, w_row, "{name}:{key}[{i}] mismatch");
+            }
+        } else {
+            assert_eq!(got, want, "{name}:{key} mismatch");
+        }
     }
 }
 

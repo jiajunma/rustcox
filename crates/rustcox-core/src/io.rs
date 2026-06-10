@@ -58,13 +58,17 @@ fn pol_key(p: &Laurent) -> (i32, Vec<i64>) {
 /// where `remap[i]` is the canonical index of the polynomial originally at
 /// pool index `i`.
 fn canonical_pol_pool(pols: &[Laurent]) -> (Vec<Value>, Vec<usize>) {
-    let mut uniq: Vec<(i32, Vec<i64>)> = pols.iter().map(pol_key).collect();
+    // Compute keys once; reuse for both dedup and remap.
+    let keys: Vec<(i32, Vec<i64>)> = pols.iter().map(pol_key).collect();
+
+    let mut uniq = keys.clone();
     uniq.sort();
     uniq.dedup();
 
-    let pos = |k: &(i32, Vec<i64>)| uniq.binary_search(k).expect("key present");
-
-    let remap: Vec<usize> = pols.iter().map(|p| pos(&pol_key(p))).collect();
+    let remap: Vec<usize> = keys
+        .iter()
+        .map(|k| uniq.binary_search(k).expect("key present"))
+        .collect();
     let sorted_json: Vec<Value> = uniq.iter().map(|(v, c)| json!({"v": v, "c": c})).collect();
     (sorted_json, remap)
 }

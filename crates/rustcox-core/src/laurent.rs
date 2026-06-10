@@ -148,6 +148,34 @@ impl Laurent {
         }
     }
 
+    /// Return `(self · v^d) · k` in a single allocation.
+    ///
+    /// Equivalent to `self.shifted(d).scaled(k)` but avoids the intermediate
+    /// allocation.  `k == 0` or a zero polynomial returns the zero polynomial;
+    /// `k == ±1` skips the per-coefficient multiply.
+    pub fn shift_scaled(&self, d: i32, k: i64) -> Self {
+        if k == 0 || self.is_zero() {
+            return Self::zero();
+        }
+        let new_val = self.val + d;
+        if k == 1 {
+            return Self {
+                val: new_val,
+                coeffs: self.coeffs.clone(),
+            };
+        }
+        if k == -1 {
+            return Self {
+                val: new_val,
+                coeffs: self.coeffs.iter().map(|&c| -c).collect(),
+            };
+        }
+        Self {
+            val: new_val,
+            coeffs: self.coeffs.iter().map(|&c| c * k).collect(),
+        }
+    }
+
     /// Return `k · self`.
     pub fn scaled(&self, k: i64) -> Self {
         if k == 0 || self.is_zero() {
@@ -463,6 +491,31 @@ mod tests {
         assert_eq!(f.zero_part(), 2);
         assert_eq!(f.bar(), Laurent::from_coeffs(-1, vec![3, 2, 1]));
         assert_eq!(Laurent::zero().zero_part(), 0);
+    }
+
+    #[test]
+    fn shift_scaled_single_pass() {
+        // from_coeffs(0,[1,0,1]).shift_scaled(2,-3) == from_coeffs(2,[-3,0,-3])
+        let p = Laurent::from_coeffs(0, vec![1, 0, 1]);
+        assert_eq!(
+            p.shift_scaled(2, -3),
+            Laurent::from_coeffs(2, vec![-3, 0, -3])
+        );
+
+        // shift_scaled(_,0) is zero
+        assert_eq!(p.shift_scaled(5, 0), Laurent::zero());
+        assert_eq!(Laurent::zero().shift_scaled(2, -3), Laurent::zero());
+
+        // k==1 and k==-1 trivial paths
+        assert_eq!(p.shift_scaled(1, 1), Laurent::from_coeffs(1, vec![1, 0, 1]));
+        assert_eq!(
+            p.shift_scaled(1, -1),
+            Laurent::from_coeffs(1, vec![-1, 0, -1])
+        );
+
+        // consistency: shift_scaled == shifted().scaled()
+        let q = Laurent::from_coeffs(-2, vec![3, 1, 4, 1, 5]);
+        assert_eq!(q.shift_scaled(3, 7), q.shifted(3).scaled(7));
     }
 
     #[test]

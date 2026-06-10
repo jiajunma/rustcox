@@ -182,6 +182,16 @@ fn bruhat_flag(w: ElmIdx, y: ElmIdx, first_desc: usize, ctx: &KlCtx<'_>) -> bool
 // KL polynomial (Phase B)
 // ---------------------------------------------------------------------------
 
+/// Find the first generator `s` (in `0..rank`) such that `lft(y, s) > y` and
+/// `lft(w, s) < w`.  Returns `Some(s)` on the first match, `None` if none.
+///
+/// Used by both Case I (with the original pair `(y, w)`) and Case II (with the
+/// inverse pair `(iy, iw)`).
+#[inline]
+fn find_desc_asc(elms: &ElementTable, y: ElmIdx, w: ElmIdx, rank: usize) -> Option<usize> {
+    (0..rank).find(|&s| elms.lft(y, s) > y && elms.lft(w, s) < w)
+}
+
 /// Compute `P̃_{y,w}` for a comparable pair `(w, y)`, equal parameters.
 ///
 /// `cur` holds this row's already-computed polynomial slots for indices
@@ -216,21 +226,15 @@ fn compute_h(w: ElmIdx, y: ElmIdx, first_desc: usize, ctx: &KlCtx<'_>, cur: &[Po
     }
 
     // 3. Case I: first s with lft(y,s) > y and lft(w,s) < w.
-    let mut s = 0usize;
-    while s < rank && (elms.lft(y, s) < y || elms.lft(w, s) > w) {
-        s += 1;
-    }
-    if s < rank {
+    // PyCox ≈10302–10309
+    if let Some(s) = find_desc_asc(elms, y, w, rank) {
         let sy = elms.lft(y, s); // > y, same row
         return same_row_value(cur, sy);
     }
 
     // 4. Case II: same search on the inverses.
-    let mut s = 0usize;
-    while s < rank && (elms.lft(iy, s) < iy || elms.lft(iw, s) > iw) {
-        s += 1;
-    }
-    if s < rank {
+    // PyCox ≈10310–10318
+    if let Some(s) = find_desc_asc(elms, iy, iw, rank) {
         let sy = elms.lft(iy, s); // > iy
         let idx = elms.inva[sy as usize]; // length l(y)+1 ⇒ > y, same row
         return same_row_value(cur, idx);
@@ -282,8 +286,8 @@ fn compute_h(w: ElmIdx, y: ElmIdx, first_desc: usize, ctx: &KlCtx<'_>, cur: &[Po
             continue;
         };
         let shift = lw_w - ctx.lweights[z as usize] as i32;
-        // h -= m · v^shift · P̃_{y,z}
-        h -= &pyz.shifted(shift).scaled(m);
+        // h -= m · v^shift · P̃_{y,z}  (single-pass: no intermediate allocation)
+        h -= &pyz.shift_scaled(shift, m);
     }
 
     h
