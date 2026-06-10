@@ -6,3 +6,7 @@ __pycache__/
 /out
 flamegraph.svg
 perf.data*
+
+# SLURM job outputs (hpc/*.sbatch write here)
+/results/*
+!/results/.gitkeep
