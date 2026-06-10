@@ -37,6 +37,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// One irreducible factor of a (possibly reducible) Coxeter group.
+#[derive(Debug)]
 pub struct TypeComponent {
     /// Dynkin series of this factor.
     pub series: Series,
@@ -48,6 +49,7 @@ pub struct TypeComponent {
 /// A finite Coxeter group.
 ///
 /// All permutations in `permgens` act on a root set of size `2 * n_pos`.
+#[derive(Debug)]
 pub struct CoxeterGroup {
     /// Number of simple generators (= total rank).
     pub rank: usize,
@@ -78,9 +80,7 @@ pub struct CoxeterGroup {
 impl CoxeterGroup {
     /// Build a Coxeter group from a type string (e.g. `"B2"`, `"A2xA1"`).
     pub fn from_type(s: &str) -> Result<Self, Error> {
-        let comps = parse_type(s)?;
-        let refs: Vec<(Series, usize)> = comps;
-        Self::from_components(&refs)
+        Self::from_components(&parse_type(s)?)
     }
 
     /// Build a Coxeter group from a slice of `(series, rank)` pairs.
@@ -95,6 +95,15 @@ impl CoxeterGroup {
                 String::new(),
                 "empty component list".to_string(),
             ));
+        }
+
+        // Gen is u8; generators are indexed 0..rank, so rank must fit in u8.
+        let total_rank: usize = comps.iter().map(|&(_, r)| r).sum();
+        if total_rank > 255 {
+            return Err(Error::RankOutOfRange {
+                series: "product".to_string(),
+                rank: total_rank,
+            });
         }
 
         // Build each component's root system.
@@ -331,6 +340,7 @@ impl CoxeterGroup {
                     // new_cur[i] = cur[permgens[s][i]]
                     // = then(permgens[s], cur)
                     cur = self.permgens[s].then(&cur);
+                    // Safe: from_components guards rank ≤ 255 so s fits in Gen (u8).
                     word.push(s as Gen);
                 }
             }
@@ -340,8 +350,8 @@ impl CoxeterGroup {
 
     /// Convert a word to a `CoxElm` (first `rank` entries of the permutation).
     ///
-    /// Replicates PyCox `wordtocoxelm`: starts with c = [0, 1, ..., rank-1]
-    /// and accumulates `c[i] = permgens[s][c[i]]` for each s.
+    /// Replicates PyCox `wordtocoxelm`: computes the full 2N permutation via
+    /// [`word_to_perm`] and then truncates to the first `rank` entries.
     pub fn word_to_coxelm(&self, w: &[Gen]) -> crate::element::CoxElm {
         self.word_to_perm(w).coxelm(self.rank)
     }
@@ -362,15 +372,24 @@ impl CoxeterGroup {
         let n = self.n_pos as usize;
         (0..self.rank)
             .filter(|&s| p.0[s] as usize >= n)
+            // Safe: from_components guards rank ≤ 255 so s fits in Gen (u8).
             .map(|s| s as Gen)
             .collect()
     }
 
     /// Return the right descent set of p.
     ///
-    /// Right descents of p = left descents of p⁻¹.
+    /// `s` is a right descent iff p⁻¹(α_s) is a negative root, i.e. the unique
+    /// j with `p[j] == s` satisfies `j >= N`.  Equivalently, s does not appear
+    /// among `p[0..N]` (the images of positive roots).  This avoids allocating
+    /// the inverse permutation by scanning the negative block of p once per s.
     pub fn right_descents(&self, p: &Perm) -> Vec<Gen> {
-        self.left_descents(&p.inverse())
+        let n = self.n_pos as usize;
+        (0..self.rank)
+            .filter(|&s| (n..2 * n).any(|j| p.0[j] as usize == s))
+            // Safe: from_components guards rank ≤ 255 so s fits in Gen (u8).
+            .map(|s| s as Gen)
+            .collect()
     }
 
     /// Return a reference to the longest element w₀.
@@ -494,5 +513,55 @@ mod tests {
         let ce = w.word_to_coxelm(&[0, 1]);
         // CoxElm has rank=2 entries.
         assert_eq!(ce.0.len(), 2);
+    }
+
+    /// Property test: right_descents(p) == left_descents(p.inverse()) for 50
+    /// deterministic words in B3.  Verifies the allocation-free formula
+    /// p[N+s] < N against the reference inverse()-based definition.
+    #[test]
+    fn b3_right_descents_matches_inverse_based() {
+        let w = CoxeterGroup::from_type("B3").unwrap();
+        // 50 deterministic words built by cycling through generators 0,1,2.
+        let words: Vec<Vec<Gen>> = (0u32..50)
+            .map(|i| {
+                (0..=(i % 8))
+                    .map(|j| ((i + j) % w.rank as u32) as Gen)
+                    .collect()
+            })
+            .collect();
+        for word in &words {
+            let p = w.word_to_perm(word);
+            let direct = w.right_descents(&p);
+            let via_inv = w.left_descents(&p.inverse());
+            assert_eq!(
+                direct, via_inv,
+                "right_descents mismatch for word {word:?}: direct={direct:?} via_inv={via_inv:?}"
+            );
+        }
+    }
+
+    /// A1×A1: generators 0 and 1 commute (they act on disjoint root systems).
+    #[test]
+    fn a1xa1_generators_commute() {
+        let w = CoxeterGroup::from_components(&[(Series::A, 1), (Series::A, 1)]).unwrap();
+        assert_eq!(
+            w.word_to_perm(&[0, 1]),
+            w.word_to_perm(&[1, 0]),
+            "generators of A1×A1 should commute"
+        );
+    }
+
+    /// Rank guard: a product group whose total rank exceeds 255 must be rejected.
+    #[test]
+    fn rank_guard_rejects_overflow() {
+        // 86 copies of A3 = rank 3×86 = 258 > 255.
+        let comps: Vec<(Series, usize)> = vec![(Series::A, 3); 86];
+        assert!(
+            matches!(
+                CoxeterGroup::from_components(&comps),
+                Err(Error::RankOutOfRange { .. })
+            ),
+            "expected RankOutOfRange for total rank 258"
+        );
     }
 }
