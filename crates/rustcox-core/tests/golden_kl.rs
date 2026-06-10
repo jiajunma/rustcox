@@ -161,6 +161,13 @@ fn kl_i8_w1_2() {
     check_kl_golden("kl_I8_w1_2");
 }
 
+// Even-m dihedral I₂(10): exercises the asymmetric cyclotomic Cartan
+// [[2,-1],[-2-ir(5),2]] (m/2 = 5) through the full KL pipeline.
+#[test]
+fn kl_i10() {
+    check_kl_golden("kl_I10_w1");
+}
+
 // ---------------------------------------------------------------------------
 // Unequal-parameter golden suites (Task 10)
 // ---------------------------------------------------------------------------

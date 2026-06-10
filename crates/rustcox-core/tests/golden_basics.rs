@@ -13,7 +13,7 @@ use rustcox_core::group::CoxeterGroup;
 use rustcox_core::roots;
 
 /// Names of all golden basics files (now including the CycInt dihedral types
-/// I₂(7) and I₂(8), enabled by Task 18).
+/// I₂(7), I₂(8) and the even-m cases I₂(10), I₂(12), enabled by Task 18).
 const BASICS_NAMES: &[&str] = &[
     "basics_A1",
     "basics_A2",
@@ -34,6 +34,8 @@ const BASICS_NAMES: &[&str] = &[
     "basics_I5",
     "basics_I7",
     "basics_I8",
+    "basics_I10",
+    "basics_I12",
 ];
 
 #[test]
@@ -257,6 +259,8 @@ fn longest_words() {
         "basics_I5",
         "basics_I7",
         "basics_I8",
+        "basics_I10",
+        "basics_I12",
     ];
 
     for name in NAMES {
@@ -359,6 +363,8 @@ fn element_tables_length_histogram() {
         "basics_I5",
         "basics_I7",
         "basics_I8",
+        "basics_I10",
+        "basics_I12",
         "basics_C3",
         "basics_D4",
     ];
