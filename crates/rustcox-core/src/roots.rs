@@ -61,8 +61,8 @@ pub fn build(cmat: &CartanMat) -> RootSystem {
             }
         }
         CartanMat::Golden(mat) => {
-            let (_, permgens) = build_generic(mat);
-            let n_pos = permgens[0].0.len() as u32 / 2;
+            let (roots, permgens) = build_generic(mat);
+            let n_pos = roots.len() as u32 / 2;
             RootSystem {
                 n_pos,
                 roots_int: None,
@@ -195,12 +195,15 @@ fn build_generic<R: RootCoeff>(cmat: &[Vec<R>]) -> (Vec<Vec<R>>, Vec<Perm>) {
     for s in 0..rank {
         let perm: Box<[u32]> = all_roots
             .iter()
-            .map(|root| {
+            .enumerate()
+            .map(|(i, root)| {
                 let image = reflect(root, s, cmat);
-                *root_to_idx
-                    .get(&image)
-                    .unwrap_or_else(|| panic!("reflection of root not found in root system"))
-                    as u32
+                *root_to_idx.get(&image).unwrap_or_else(|| {
+                    panic!(
+                        "reflection of root not found in root system \
+                             (generator s={s}, root index i={i})"
+                    )
+                }) as u32
             })
             .collect();
         permgens.push(Perm(perm));

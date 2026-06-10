@@ -148,6 +148,82 @@ fn root_systems() {
     }
 }
 
+/// Verify that permgens satisfy the Coxeter relations for every type in BASICS_NAMES.
+///
+/// For each entry we check:
+/// 1. Every permgen is an involution: `perm[perm[i]] == i` for all `i < 2N`.
+/// 2. For every pair `s < t`, the product permutation `p = permgens[s] ∘ permgens[t]`
+///    (i.e. `p[i] = permgens[t][permgens[s][i]]`) has multiplicative order exactly
+///    `coxmat[s][t]` (capped at 100 to detect divergence).
+#[test]
+fn permgen_coxeter_relations() {
+    for name in BASICS_NAMES {
+        let g = common::golden(name);
+        let components = common::components_of(&g);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "{name}: expected single component, got {}",
+            components.len()
+        );
+        let (series, rank) = components[0];
+        let cartan = cartan_mat(series, rank)
+            .unwrap_or_else(|e| panic!("{name}: cartan_mat({series:?}, {rank}) failed: {e}"));
+        let coxmat = coxeter_mat_from_cartan(&cartan);
+        let rs = roots::build(&cartan);
+        let n2 = rs.permgens[0].0.len(); // 2N
+
+        // 1. Involution check
+        for s in 0..rank {
+            let perm = &rs.permgens[s].0;
+            for i in 0..n2 {
+                let j = perm[i] as usize;
+                assert_eq!(
+                    perm[j] as usize, i,
+                    "{name}: permgens[{s}] is not an involution at root index {i}"
+                );
+            }
+        }
+
+        // 2. Coxeter-relation order check
+        for s in 0..rank {
+            for t in (s + 1)..rank {
+                let m = coxmat[s][t] as usize;
+                // Compose: p[i] = permgens[t][permgens[s][i]]
+                let ps = &rs.permgens[s].0;
+                let pt = &rs.permgens[t].0;
+                // Start with identity, apply (ps then pt) repeatedly
+                let mut current: Vec<usize> = (0..n2).collect();
+                let mut order = 0usize;
+                loop {
+                    // Apply one step of the product: i -> pt[ps[i]]
+                    let next: Vec<usize> = current
+                        .iter()
+                        .map(|&i| pt[ps[i] as usize] as usize)
+                        .collect();
+                    order += 1;
+                    if next.iter().enumerate().all(|(i, &v)| v == i) {
+                        // Reached identity
+                        break;
+                    }
+                    current = next;
+                    assert!(
+                        order < 100,
+                        "{name}: product permgens[{s}]∘permgens[{t}] did not return to \
+                         identity within 100 steps (coxmat[{s}][{t}]={m})"
+                    );
+                }
+                assert_eq!(
+                    order, m,
+                    "{name}: product permgens[{s}]∘permgens[{t}] has order {order}, \
+                     expected coxmat[{s}][{t}]={m}"
+                );
+            }
+        }
+    }
+}
+
 /// Placeholder for I7 and I8 — needs CycInt (Task 18).
 #[test]
 #[ignore = "needs CycInt (Task 18)"]
