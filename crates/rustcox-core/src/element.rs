@@ -54,9 +54,27 @@ impl Perm {
     }
 
     /// Extract the first `rank` entries as a `CoxElm`.
+    ///
+    /// Only correct for irreducible groups where simple root s is at position s.
+    /// For reducible groups with non-contiguous simple roots, use `coxelm_sr`.
     #[inline]
     pub fn coxelm(&self, rank: usize) -> CoxElm {
         CoxElm(self.0[..rank].to_vec().into_boxed_slice())
+    }
+
+    /// Extract the images of simple roots `simple_roots[s]` as a `CoxElm`.
+    ///
+    /// Correct for both irreducible and reducible groups.  When `simple_roots[s] == s`
+    /// for all s (irreducible case), this is identical to `coxelm(rank)`.
+    #[inline]
+    pub fn coxelm_sr(&self, simple_roots: &[usize]) -> CoxElm {
+        CoxElm(
+            simple_roots
+                .iter()
+                .map(|&r| self.0[r])
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
     }
 }
 

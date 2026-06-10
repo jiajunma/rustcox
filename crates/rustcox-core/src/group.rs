@@ -49,6 +49,14 @@ pub struct TypeComponent {
 /// A finite Coxeter group.
 ///
 /// All permutations in `permgens` act on a root set of size `2 * n_pos`.
+///
+/// ## Invariant: simple root indexing
+///
+/// `simple_root[s]` gives the global root index of the s-th simple root.
+/// For irreducible groups this is always `s` (simple roots are roots 0..rank).
+/// For reducible groups it may differ when component n_pos > component rank.
+/// All descent-check functions use this map so they work correctly for
+/// both irreducible and reducible groups.
 #[derive(Debug)]
 pub struct CoxeterGroup {
     /// Number of simple generators (= total rank).
@@ -69,6 +77,12 @@ pub struct CoxeterGroup {
     /// Integer coordinate vectors for all 2N roots.
     /// `Some` iff every component is crystallographic (non-Golden).
     pub roots_int: Option<Vec<Vec<i64>>>,
+    /// `simple_root[s]` = global positive-root index of the s-th simple root.
+    ///
+    /// For irreducible groups always `simple_root[s] == s`.  For reducible
+    /// groups with unequal component sizes (e.g. A2×A1) the values differ
+    /// for generators beyond the first component.
+    pub simple_root: Vec<usize>,
     /// Cached longest element (computed lazily).
     longest: OnceLock<Perm>,
 }
@@ -277,6 +291,18 @@ impl CoxeterGroup {
             })
             .collect();
 
+        // Build simple_root: simple_root[gen_offset_k + s] = pos_offset_k + s
+        // for s in 0..rank_k, for each component k.
+        // For irreducible groups this is always simple_root[s] = s.
+        let mut simple_root: Vec<usize> = vec![0; rank];
+        for (k, cd) in comp_data.iter().enumerate() {
+            let go = gen_offsets[k];
+            let po = pos_offsets[k] as usize;
+            for s in 0..cd.rank {
+                simple_root[go + s] = po + s;
+            }
+        }
+
         Ok(CoxeterGroup {
             rank,
             n_pos,
@@ -286,6 +312,7 @@ impl CoxeterGroup {
             permgens,
             components,
             roots_int,
+            simple_root,
             longest: OnceLock::new(),
         })
     }
@@ -320,9 +347,12 @@ impl CoxeterGroup {
     /// Convert a permutation to its canonical reduced word.
     ///
     /// Replicates PyCox `permtoword`: repeatedly find the smallest `s` with
-    /// `p[s] >= N`, set `p ← then(P_s, p)` (left-multiply by s), and append s.
-    /// This strips one left descent at a time, yielding the lex-smallest
-    /// reduced word.
+    /// `p[simple_root[s]] >= N`, set `p ← then(P_s, p)` (left-multiply by s),
+    /// and append s.  This strips one left descent at a time, yielding the
+    /// lex-smallest reduced word.
+    ///
+    /// Uses `simple_root[s]` so this works correctly for both irreducible and
+    /// reducible groups.
     ///
     /// Composition note: `then(P_s, p)[i] = p[P_s[i]]`, which corresponds to
     /// the PyCox expression `[p[i] for i in permgens[s]]`.
@@ -331,8 +361,8 @@ impl CoxeterGroup {
         let mut cur = p.clone();
         let mut word = Vec::new();
         loop {
-            // Find smallest s with cur[s] >= n  (s is a left descent).
-            let s = (0..self.rank).find(|&s| cur.0[s] as usize >= n);
+            // Find smallest s with cur[simple_root[s]] >= n  (s is a left descent).
+            let s = (0..self.rank).find(|&s| cur.0[self.simple_root[s]] as usize >= n);
             match s {
                 None => break,
                 Some(s) => {
@@ -348,17 +378,18 @@ impl CoxeterGroup {
         word
     }
 
-    /// Convert a word to a `CoxElm` (first `rank` entries of the permutation).
+    /// Convert a word to a `CoxElm` (images of simple roots under the permutation).
     ///
     /// Replicates PyCox `wordtocoxelm`: computes the full 2N permutation via
-    /// [`word_to_perm`] and then truncates to the first `rank` entries.
+    /// [`word_to_perm`] and extracts the simple-root images via `coxelm_sr`.
     pub fn word_to_coxelm(&self, w: &[Gen]) -> crate::element::CoxElm {
-        self.word_to_perm(w).coxelm(self.rank)
+        self.word_to_perm(w).coxelm_sr(&self.simple_root)
     }
 
     /// Return the length of a permutation.
     ///
-    /// `length = #{i < N : p[i] >= N}`.
+    /// `length = #{i < N : p[i] >= N}` — the number of positive roots that map
+    /// to negative roots under this element.
     #[inline]
     pub fn perm_length(&self, p: &Perm) -> u32 {
         let n = self.n_pos as usize;
@@ -367,11 +398,11 @@ impl CoxeterGroup {
 
     /// Return the left descent set of p.
     ///
-    /// `s` is a left descent iff `p[s] >= N`.
+    /// `s` is a left descent iff `p[simple_root[s]] >= N`.
     pub fn left_descents(&self, p: &Perm) -> Vec<Gen> {
         let n = self.n_pos as usize;
         (0..self.rank)
-            .filter(|&s| p.0[s] as usize >= n)
+            .filter(|&s| p.0[self.simple_root[s]] as usize >= n)
             // Safe: from_components guards rank ≤ 255 so s fits in Gen (u8).
             .map(|s| s as Gen)
             .collect()
@@ -379,14 +410,16 @@ impl CoxeterGroup {
 
     /// Return the right descent set of p.
     ///
-    /// `s` is a right descent iff p⁻¹(α_s) is a negative root, i.e. the unique
-    /// j with `p[j] == s` satisfies `j >= N`.  Equivalently, s does not appear
-    /// among `p[0..N]` (the images of positive roots).  This avoids allocating
-    /// the inverse permutation by scanning the negative block of p once per s.
+    /// `s` is a right descent iff the simple root `simple_root[s]` maps to a
+    /// negative root under `p⁻¹`, i.e. the preimage of `simple_root[s]` under
+    /// `p` lies in the negative block `[N, 2N)`.
     pub fn right_descents(&self, p: &Perm) -> Vec<Gen> {
         let n = self.n_pos as usize;
         (0..self.rank)
-            .filter(|&s| (n..2 * n).any(|j| p.0[j] as usize == s))
+            .filter(|&s| {
+                let r = self.simple_root[s];
+                (n..2 * n).any(|j| p.0[j] as usize == r)
+            })
             // Safe: from_components guards rank ≤ 255 so s fits in Gen (u8).
             .map(|s| s as Gen)
             .collect()
@@ -395,7 +428,7 @@ impl CoxeterGroup {
     /// Return a reference to the longest element w₀.
     ///
     /// Computed lazily and cached.  Replicates PyCox `longestperm`:
-    /// start from the identity; while ∃ s ∈ rank with p[s] < N,
+    /// start from the identity; while ∃ s ∈ rank with p[simple_root[s]] < N,
     /// set `p ← then(P_s, p)` (left-multiply by s).
     ///
     /// Composition note: `then(P_s, p)[i] = p[P_s[i]]`, matching PyCox
@@ -406,8 +439,8 @@ impl CoxeterGroup {
             let rank = self.rank;
             let mut p = self.id_perm();
             loop {
-                // Find any s ∈ 0..rank with p[s] < n.
-                let s = (0..rank).find(|&s| (p.0[s] as usize) < n);
+                // Find any s ∈ 0..rank with p[simple_root[s]] < n.
+                let s = (0..rank).find(|&s| (p.0[self.simple_root[s]] as usize) < n);
                 match s {
                     None => break,
                     Some(s) => {

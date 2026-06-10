@@ -444,7 +444,7 @@ fn a4_element_table_invariants() {
         let perm = group.word_to_perm(&table.elms[i]);
         let left_desc = group.left_descents(&perm);
         for s in 0..group.rank {
-            let lft_idx = table.lft[i][s];
+            let lft_idx = table.lft(i as u32, s);
             let is_left_desc = left_desc.contains(&(s as u8));
             assert_eq!(
                 lft_idx < i as u32,

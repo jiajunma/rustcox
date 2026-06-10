@@ -17,11 +17,17 @@
 //!
 //! # Left-multiplication verification (B2 unit test below)
 //!
-//! `lft[w][s] < w  ⟺  s ∈ left_descents(w)` — because the table is
+//! `lft(w, s) < w  ⟺  s ∈ left_descents(w)` — because the table is
 //! sorted by increasing length, shorter elements always have smaller
 //! indices than longer ones, and equal-length elements are never each
 //! other's s-image (that would require l(s·w) = l(w), impossible for
 //! simple s).
+//!
+//! # lft storage layout
+//!
+//! `lft` is a flat row-major `Vec<ElmIdx>` of length `|W| * rank`.
+//! Use `self.lft(w, s)` to access entry `(w, s)`.  Flat layout
+//! avoids pointer-chasing in the KL hot path.
 
 use std::collections::HashMap;
 
@@ -55,11 +61,13 @@ pub struct ElementTable {
     /// Equivalently: `perm(elms[i]) · longest_perm`.
     /// Invariant: `lengths[aw0[i]] == N − lengths[i]`.
     pub aw0: Vec<ElmIdx>,
-    /// `lft[i][s]` = canonical index of `s · elms[i]` (LEFT mult by gen `s`).
+    /// Flat row-major left-multiplication table of length `|W| * rank`.
     ///
-    /// Computed as: `permgens[s].then(&perm_w)`.
-    /// Invariant: `lft[i][s] < i  ⟺  s ∈ left_descents(elms[i])`.
-    pub lft: Vec<Vec<ElmIdx>>,
+    /// Access via `self.lft(w, s)` = index of `s · elms[w]`.
+    /// Invariant: `lft(i, s) < i  ⟺  s ∈ left_descents(elms[i])`.
+    pub lft: Vec<ElmIdx>,
+    /// Number of generators (rank of the Coxeter group).
+    pub rank: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +75,15 @@ pub struct ElementTable {
 // ---------------------------------------------------------------------------
 
 impl ElementTable {
-    /// Build the complete element table for `w`.
+    /// Return `lft(w, s)` = canonical index of `s · elms[w]`.
+    ///
+    /// Flat row-major accessor: `lft[w * rank + s]`.
+    #[inline]
+    pub fn lft(&self, w: ElmIdx, s: usize) -> ElmIdx {
+        self.lft[w as usize * self.rank + s]
+    }
+
+    /// Build the complete element table for `group`.
     ///
     /// ## Algorithm
     ///
@@ -84,11 +100,11 @@ impl ElementTable {
     ///    `perm_to_word`, then sort all elements by `(length, word lex)`.
     ///
     /// 4. **Map construction**: build `index`, `inva`, `aw0`, `lft`.
-    pub fn build(w: &CoxeterGroup) -> Self {
-        let rank = w.rank;
-        let n = w.n_pos as usize; // positive root count = N
-        let order = w.order as usize;
-        let longest = w.longest_perm();
+    pub fn build(group: &CoxeterGroup) -> Self {
+        let rank = group.rank;
+        let n = group.n_pos as usize; // positive root count = N
+        let order = group.order as usize;
+        let longest = group.longest_perm();
 
         // ---------------------------------------------------------------
         // Phase 1: BFS enumerate all elements as (CoxElm, full Perm) pairs
@@ -98,15 +114,15 @@ impl ElementTable {
         // deduplication; Perm is needed for descent checks, `lft`, `inva`,
         // and `aw0` construction.
         //
-        // Memory: F4 → 1152 × (rank=4 + 2N=48) × 4 bytes ≈ 238 KB — fine.
-        // H4 (not in tests but handled): 14400 × (4+240) × 4 ≈ 14 MB — fine.
+        // Peak memory (Phase 1 + flat): 2 × order × (rank + 2N) × 4 bytes.
+        // F4 → 2 × 1152 × (4+48) × 4 ≈ 478 KB.  H4 → 2 × 14400 × 244 × 4 ≈ 28 MB.
 
         // Each level: Vec of (CoxElm, Perm)
         let mut levels: Vec<Vec<(CoxElm, Perm)>> = Vec::new();
 
         // Level 0: identity
-        let id_perm = w.id_perm();
-        let id_coxelm = id_perm.coxelm(rank);
+        let id_perm = group.id_perm();
+        let id_coxelm = id_perm.coxelm_sr(&group.simple_root);
         levels.push(vec![(id_coxelm, id_perm)]);
 
         let half = n / 2; // floor(N/2)
@@ -115,16 +131,17 @@ impl ElementTable {
             if i < half || (n % 2 == 1 && i == half) {
                 // BFS: extend current level by left-multiplying by non-left-descents
                 let prev = &levels[i];
-                let mut seen: HashMap<CoxElm, Perm> = HashMap::new();
+                // Upper bound on next level size: prev.len() * rank
+                let mut seen: HashMap<CoxElm, Perm> = HashMap::with_capacity(prev.len() * rank);
                 for (_, p) in prev {
                     for s in 0..rank {
-                        // s is a left descent iff p[s] >= n
-                        if p.0[s] as usize >= n {
+                        // s is a left descent iff p[simple_root[s]] >= n
+                        if p.0[group.simple_root[s]] as usize >= n {
                             continue; // skip: left descent → length would decrease
                         }
                         // Left-multiply: perm(s · w) = permgens[s].then(p)
-                        let np = w.permgens[s].then(p);
-                        let ce = np.coxelm(rank);
+                        let np = group.permgens[s].then(p);
+                        let ce = np.coxelm_sr(&group.simple_root);
                         seen.entry(ce).or_insert(np);
                     }
                 }
@@ -142,7 +159,7 @@ impl ElementTable {
                     .iter()
                     .map(|(_, p)| {
                         let np = p.then(longest);
-                        let ce = np.coxelm(rank);
+                        let ce = np.coxelm_sr(&group.simple_root);
                         (ce, np)
                     })
                     .collect();
@@ -166,12 +183,12 @@ impl ElementTable {
             let l = len_idx as u32;
             for (ce, p) in level {
                 // Compute canonical word (lex-min reduced word)
-                let word = w.perm_to_word(p);
+                let word = group.perm_to_word(p);
                 debug_assert_eq!(
                     word.len() as u32,
                     l,
                     "perm_length mismatch at BFS level {l}: word={word:?} perm_length={}",
-                    w.perm_length(p)
+                    group.perm_length(p)
                 );
                 flat.push((word, ce.clone(), p.clone(), l));
             }
@@ -191,12 +208,22 @@ impl ElementTable {
         flat.sort_by(|a, b| a.3.cmp(&b.3).then_with(|| a.0.cmp(&b.0)));
 
         // ---------------------------------------------------------------
-        // Phase 3: Extract arrays
+        // Phase 3: Single-pass extraction into pre-capacitied Vecs
+        //
+        // Consume `flat` in one pass, eliminating clone-per-Perm and
+        // halving peak memory vs. collecting each field separately.
         // ---------------------------------------------------------------
-        let elms: Vec<Word> = flat.iter().map(|(w, _, _, _)| w.clone()).collect();
-        let coxelms: Vec<CoxElm> = flat.iter().map(|(_, ce, _, _)| ce.clone()).collect();
-        let perms: Vec<Perm> = flat.iter().map(|(_, _, p, _)| p.clone()).collect();
-        let lengths: Vec<u32> = flat.iter().map(|(_, _, _, l)| *l).collect();
+        let mut elms: Vec<Word> = Vec::with_capacity(order);
+        let mut coxelms: Vec<CoxElm> = Vec::with_capacity(order);
+        let mut perms: Vec<Perm> = Vec::with_capacity(order);
+        let mut lengths: Vec<u32> = Vec::with_capacity(order);
+
+        for (word, ce, p, l) in flat {
+            elms.push(word);
+            coxelms.push(ce);
+            perms.push(p);
+            lengths.push(l);
+        }
 
         // Build the CoxElm → index map
         let mut index: HashMap<CoxElm, ElmIdx> = HashMap::with_capacity(order);
@@ -211,7 +238,7 @@ impl ElementTable {
             .iter()
             .map(|p| {
                 let inv_perm = p.inverse();
-                let inv_ce = inv_perm.coxelm(rank);
+                let inv_ce = inv_perm.coxelm_sr(&group.simple_root);
                 *index.get(&inv_ce).expect("inverse element not in table")
             })
             .collect();
@@ -220,7 +247,7 @@ impl ElementTable {
         // Phase 5: aw0 — index of w · w0 (RIGHT multiplication by w0)
         //
         // perm(w · w0) = perm_w.then(longest_perm)
-        // CoxElm = first `rank` entries of that composition.
+        // CoxElm = images of simple roots under the composition.
         //
         // Invariant: lengths[aw0[i]] == N - lengths[i]
         // ---------------------------------------------------------------
@@ -229,7 +256,7 @@ impl ElementTable {
             .enumerate()
             .map(|(i, p)| {
                 let np = p.then(longest);
-                let ce = np.coxelm(rank);
+                let ce = np.coxelm_sr(&group.simple_root);
                 let idx = *index.get(&ce).expect("w·w0 element not in table");
                 debug_assert_eq!(
                     lengths[idx as usize],
@@ -243,32 +270,27 @@ impl ElementTable {
             .collect();
 
         // ---------------------------------------------------------------
-        // Phase 6: lft — left multiplication by generators
+        // Phase 6: lft — flat row-major left multiplication by generators
         //
-        // lft[i][s] = index of s · w_i
+        // lft[i * rank + s] = index of s · w_i
         // perm(s · w_i) = permgens[s].then(&perm_w_i)
         //
-        // Invariant: lft[i][s] < i  ⟺  s ∈ left_descents(perm_w_i)
+        // Invariant: lft(i, s) < i  ⟺  s ∈ left_descents(perm_w_i)
         // ---------------------------------------------------------------
-        let lft: Vec<Vec<ElmIdx>> = perms
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                (0..rank)
-                    .map(|s| {
-                        let np = w.permgens[s].then(p);
-                        let ce = np.coxelm(rank);
-                        let idx = *index.get(&ce).expect("s·w element not in table");
-                        debug_assert!(
-                            (idx < i as ElmIdx) == (p.0[s] as usize >= n),
-                            "lft invariant violated: lft[{i}][{s}]={idx}, left_desc={}",
-                            p.0[s] as usize >= n
-                        );
-                        idx
-                    })
-                    .collect()
-            })
-            .collect();
+        let mut lft: Vec<ElmIdx> = Vec::with_capacity(order * rank);
+        for (i, p) in perms.iter().enumerate() {
+            for s in 0..rank {
+                let np = group.permgens[s].then(p);
+                let ce = np.coxelm_sr(&group.simple_root);
+                let idx = *index.get(&ce).expect("s·w element not in table");
+                debug_assert!(
+                    (idx < i as ElmIdx) == (p.0[group.simple_root[s]] as usize >= n),
+                    "lft invariant violated: lft({i},{s})={idx}, left_desc={}",
+                    p.0[group.simple_root[s]] as usize >= n
+                );
+                lft.push(idx);
+            }
+        }
 
         ElementTable {
             elms,
@@ -278,6 +300,7 @@ impl ElementTable {
             inva,
             aw0,
             lft,
+            rank,
         }
     }
 
@@ -319,18 +342,18 @@ mod tests {
     ///
     /// word_to_perm([1]) has perm P_1.
     /// perm(0 · [1]) = permgens[0].then(P_1).
-    /// We expect that to have CoxElm == word_to_perm([0,1]).coxelm(rank).
+    /// We expect that to have CoxElm == word_to_perm([0,1]).coxelm_sr(simple_root).
     #[test]
     fn b2_left_mult_side_check() {
         let group = CoxeterGroup::from_type("B2").unwrap();
-        let rank = group.rank;
+        let sr = &group.simple_root;
         let p1 = group.word_to_perm(&[1]);
         let p01 = group.word_to_perm(&[0, 1]);
         // Left-multiply perm of [1] by generator 0: permgens[0].then(p1)
         let left_result = group.permgens[0].then(&p1);
         assert_eq!(
-            left_result.coxelm(rank),
-            p01.coxelm(rank),
+            left_result.coxelm_sr(sr),
+            p01.coxelm_sr(sr),
             "permgens[0].then(perm([1])) should equal perm([0,1])"
         );
         // Sanity: the other side should NOT equal p01
@@ -338,8 +361,8 @@ mod tests {
         // [1].then([0]) corresponds to word [1,0], not [0,1]
         let p10 = group.word_to_perm(&[1, 0]);
         assert_eq!(
-            right_result.coxelm(rank),
-            p10.coxelm(rank),
+            right_result.coxelm_sr(sr),
+            p10.coxelm_sr(sr),
             "perm([1]).then(permgens[0]) should equal perm([1,0])"
         );
     }
@@ -398,12 +421,12 @@ mod tests {
             );
         }
 
-        // lft invariant: lft[i][s] < i  ⟺  s ∈ left_descents(perm_i)
+        // lft invariant: lft(i, s) < i  ⟺  s ∈ left_descents(perm_i)
         for i in 0..8 {
             let perm = group.word_to_perm(&table.elms[i]);
             let left_desc = group.left_descents(&perm);
             for s in 0..group.rank {
-                let lft_idx = table.lft[i][s];
+                let lft_idx = table.lft(i as ElmIdx, s);
                 let is_left_desc = left_desc.contains(&(s as Gen));
                 assert_eq!(
                     lft_idx < i as u32,
@@ -440,6 +463,7 @@ mod tests {
     }
 
     /// Verify A3: table size 24, inva∘inva = id, lft invariant, aw0 mirror.
+    /// Also checks: aw0[aw0[i]] == i (involution assertion).
     #[test]
     fn a3_invariants() {
         let group = CoxeterGroup::from_type("A3").unwrap();
@@ -457,6 +481,14 @@ mod tests {
             );
         }
 
+        // aw0[aw0[i]] == i  (right multiplication by w0 is an involution)
+        for i in 0..n_total {
+            assert_eq!(
+                table.aw0[table.aw0[i] as usize] as usize, i,
+                "A3 aw0∘aw0 != id at i={i}"
+            );
+        }
+
         // aw0 length mirror
         for i in 0..n_total {
             assert_eq!(
@@ -471,7 +503,7 @@ mod tests {
             let perm = group.word_to_perm(&table.elms[i]);
             let left_desc = group.left_descents(&perm);
             for s in 0..group.rank {
-                let lft_idx = table.lft[i][s];
+                let lft_idx = table.lft(i as ElmIdx, s);
                 let is_left_desc = left_desc.contains(&(s as Gen));
                 assert_eq!(
                     lft_idx < i as u32,
@@ -479,6 +511,80 @@ mod tests {
                     "A3 lft invariant violated at i={i}, s={s}"
                 );
             }
+        }
+    }
+
+    /// Reducible group A2 × A1 (order 12).
+    ///
+    /// Poincaré polynomial: (1+v)(1+v+v²)(1+v) = (1+v)²(1+v+v²).
+    /// Expand: (1+2v+v²)(1+v+v²) = 1+3v+4v²+3v³+v⁴.
+    /// Length histogram: [1, 3, 4, 3, 1].
+    ///
+    /// Checks: order 12, histogram, inva involution, aw0 involution, lft invariant.
+    #[test]
+    fn a2xa1_table() {
+        use crate::cartan::Series;
+
+        // Build A2 × A1 via from_components: A2 (rank 2) + A1 (rank 1).
+        let group = CoxeterGroup::from_components(&[(Series::A, 2), (Series::A, 1)]).unwrap();
+        let table = ElementTable::build(&group);
+
+        // Order must be 12
+        assert_eq!(table.len(), 12, "A2×A1 order should be 12");
+
+        // Length histogram: [1, 3, 4, 3, 1]
+        let max_len = *table.lengths.iter().max().unwrap_or(&0) as usize;
+        let mut hist = vec![0usize; max_len + 1];
+        for &l in &table.lengths {
+            hist[l as usize] += 1;
+        }
+        assert_eq!(
+            hist,
+            vec![1, 3, 4, 3, 1],
+            "A2×A1 length histogram should be [1,3,4,3,1]"
+        );
+
+        let n_total = table.len();
+
+        // inva∘inva == id
+        for i in 0..n_total {
+            assert_eq!(
+                table.inva[table.inva[i] as usize] as usize, i,
+                "A2×A1 inva∘inva != id at i={i}"
+            );
+        }
+
+        // aw0∘aw0 == id
+        for i in 0..n_total {
+            assert_eq!(
+                table.aw0[table.aw0[i] as usize] as usize, i,
+                "A2×A1 aw0∘aw0 != id at i={i}"
+            );
+        }
+
+        // lft invariant
+        for i in 0..n_total {
+            let perm = group.word_to_perm(&table.elms[i]);
+            let left_desc = group.left_descents(&perm);
+            for s in 0..group.rank {
+                let lft_idx = table.lft(i as ElmIdx, s);
+                let is_left_desc = left_desc.contains(&(s as Gen));
+                assert_eq!(
+                    lft_idx < i as u32,
+                    is_left_desc,
+                    "A2×A1 lft invariant violated at i={i}, s={s}: lft={lft_idx}"
+                );
+            }
+        }
+
+        // aw0 length mirror
+        let n_pos = group.n_pos;
+        for i in 0..n_total {
+            assert_eq!(
+                table.lengths[table.aw0[i] as usize],
+                n_pos - table.lengths[i],
+                "A2×A1 aw0 length mirror violated at i={i}"
+            );
         }
     }
 }
