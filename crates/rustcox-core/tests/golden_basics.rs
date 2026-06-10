@@ -8,6 +8,7 @@
 mod common;
 
 use rustcox_core::cartan::{cartan_mat, coxeter_mat_from_cartan, degrees_of, order_from_degrees};
+use rustcox_core::roots;
 
 /// Names of all golden basics files that can be tested without CycInt (Task 18).
 const BASICS_NAMES: &[&str] = &[
@@ -83,6 +84,67 @@ fn cartan_data() {
             order, golden_order,
             "{name}: order mismatch: got {order}, expected {golden_order}"
         );
+    }
+}
+
+/// Verify root systems against golden files.
+///
+/// For every basics golden file, builds the root system and checks:
+/// - `n_pos == golden["N"]`
+/// - if golden has a `"roots"` key: the full 2N coordinate list matches exactly.
+///
+/// Types H3, H4, I5 exercise `GoldenInt` arithmetic and have no `"roots"` key
+/// (golden stores integer-only roots).
+#[test]
+fn root_systems() {
+    for name in BASICS_NAMES {
+        let g = common::golden(name);
+        let components = common::components_of(&g);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "{name}: expected single component, got {}",
+            components.len()
+        );
+        let (series, rank) = components[0];
+        let cartan = cartan_mat(series, rank)
+            .unwrap_or_else(|e| panic!("{name}: cartan_mat({series:?}, {rank}) failed: {e}"));
+        let rs = roots::build(&cartan);
+
+        // --- Check n_pos ---
+        let golden_n = g["N"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name}: golden \"N\" is not a u64"))
+            as u32;
+        assert_eq!(
+            rs.n_pos, golden_n,
+            "{name}: n_pos mismatch: got {}, expected {}",
+            rs.n_pos, golden_n
+        );
+
+        // --- Check roots coordinate list (Int types only) ---
+        if let Some(golden_roots_val) = g.get("roots") {
+            let golden_roots: Vec<Vec<i64>> = serde_json::from_value(golden_roots_val.clone())
+                .unwrap_or_else(|e| panic!("{name}: failed to parse golden roots: {e}"));
+            let roots_int = rs
+                .roots_int
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name}: expected roots_int but got None"));
+            assert_eq!(
+                roots_int.len(),
+                golden_roots.len(),
+                "{name}: roots length mismatch: got {}, expected {}",
+                roots_int.len(),
+                golden_roots.len()
+            );
+            for (i, (got, expected)) in roots_int.iter().zip(golden_roots.iter()).enumerate() {
+                assert_eq!(
+                    got, expected,
+                    "{name}: roots[{i}] mismatch: got {got:?}, expected {expected:?}"
+                );
+            }
+        }
     }
 }
 
