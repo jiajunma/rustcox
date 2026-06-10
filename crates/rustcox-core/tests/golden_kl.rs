@@ -7,11 +7,12 @@
 mod common;
 
 use rustcox_core::group::CoxeterGroup;
-use rustcox_core::kl::{klpolynomials_seq, KlOpts};
+use rustcox_core::kl::{klpolynomials_seq, CellData, KlOpts};
 
 /// Build the group, run the sequential equal-parameter KL computation, and
-/// compare the canonical-JSON stub against the golden file (keys `elms`,
-/// `pols`, `klmat`, `mumat`).
+/// compare the canonical-JSON output against the golden file.  Covers the
+/// KL-polynomial keys (`elms`, `pols`, `klmat`, `mumat`) plus the Task 11 cell
+/// keys (`arrows`, `lcells`, `duflo`, `lorder`, `rcells`, `tcells`).
 fn check_kl_golden(name: &str) {
     let g = common::golden(name);
     let components = common::components_of(&g);
@@ -33,8 +34,18 @@ fn check_kl_golden(name: &str) {
     let table = klpolynomials_seq(&group, &opts)
         .unwrap_or_else(|e| panic!("{name}: klpolynomials_seq failed: {e:?}"));
 
-    let ours = rustcox_core::io::table_json(&table);
-    for key in ["elms", "pols", "klmat", "mumat"] {
+    // Merge the KL stub and the cell data into one comparison map.
+    let mut ours = rustcox_core::io::table_json(&table);
+    let cells = CellData::from_table(&table);
+    let cells_json = rustcox_core::io::cells_json(&cells);
+    let ours_obj = ours.as_object_mut().expect("table_json is an object");
+    for (k, val) in cells_json.as_object().expect("cells_json is an object") {
+        ours_obj.insert(k.clone(), val.clone());
+    }
+
+    for key in [
+        "elms", "pols", "klmat", "mumat", "arrows", "lcells", "duflo", "lorder", "rcells", "tcells",
+    ] {
         let got = &ours[key];
         let want = &g[key];
         // For array-valued keys compare element-by-element so failures name the row.

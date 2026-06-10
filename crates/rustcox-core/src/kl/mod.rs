@@ -4,9 +4,11 @@
 //! - `table`: storage layer (polynomials, mu values, rows).
 //! - Options and validation live here.
 
+pub mod cells;
 pub mod compute;
 pub(crate) mod compute_uneq;
 pub mod table;
+pub use cells::CellData;
 pub use compute::klpolynomials_seq;
 pub use table::{KlRow, KlTable, MuMode};
 

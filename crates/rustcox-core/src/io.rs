@@ -26,6 +26,7 @@
 use serde_json::{json, Value};
 
 use crate::{
+    kl::cells::CellData,
     kl::table::{KlTable, MuMode, NOT_LEQ, NO_MU},
     laurent::Laurent,
 };
@@ -127,6 +128,59 @@ pub fn table_json(t: &KlTable) -> Value {
         "klmat": klmat,
         "mumat": mumat,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Cell data JSON
+// ---------------------------------------------------------------------------
+
+/// Emit `{"arrows", "lcells", "duflo", "lorder", "rcells", "tcells"}` of the
+/// canonical golden document, matching `gen_golden.py`'s types exactly.
+///
+/// - `arrows`: sorted list of 2-element integer arrays `[w, y]`.
+/// - `lcells` / `rcells` / `tcells`: lists of ascending integer arrays.
+/// - `duflo`: list of `[d, a(d), n_d]` integer triples, aligned with `lcells`.
+/// - `lorder`: incidence matrix with `0`/`1` integer entries, aligned with
+///   `lcells`.
+pub fn cells_json(c: &CellData) -> Value {
+    let arrows: Vec<Value> = c
+        .arrows
+        .iter()
+        .map(|&(w, y)| Value::from(vec![w as i64, y as i64]))
+        .collect();
+
+    let lcells = cells_to_json(&c.lcells);
+    let rcells = cells_to_json(&c.rcells);
+    let tcells = cells_to_json(&c.tcells);
+
+    let duflo: Vec<Value> = c
+        .duflo
+        .iter()
+        .map(|&(d, a, n)| Value::from(vec![d as i64, a as i64, n]))
+        .collect();
+
+    let lorder: Vec<Value> = c
+        .lorder
+        .iter()
+        .map(|row| Value::from(row.iter().map(|&b| b as i64).collect::<Vec<_>>()))
+        .collect();
+
+    json!({
+        "arrows": arrows,
+        "lcells": lcells,
+        "duflo": duflo,
+        "lorder": lorder,
+        "rcells": rcells,
+        "tcells": tcells,
+    })
+}
+
+/// Convert a list of cells (each a slice of element indices) to JSON.
+fn cells_to_json(cells: &[Vec<u32>]) -> Vec<Value> {
+    cells
+        .iter()
+        .map(|cell| Value::from(cell.iter().map(|&w| w as i64).collect::<Vec<_>>()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
