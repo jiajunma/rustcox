@@ -12,13 +12,15 @@
 //! original Bruhat order is equivalent to `x ≤ y` after the reductions.
 //!
 //! Each pass of the loop:
-//! 1. Picks a left descent `s` of `y` (a simple root with `y[s] ≥ N`).
-//! 2. Replaces `y ← s·y`  (one positive root becomes negative; `ly` drops by 1).
-//! 3. If `s` is also a left descent of `x`, replaces `x ← s·x`; `lx` drops by 1.
+//! 1. Scans generators `0..rank` to find the first `g` with `y[simple_root[g]] ≥ N`
+//!    (a left descent of `y`).  This matches PyCox's `while y[s] < W.N: s += 1`
+//!    but uses the explicit `simple_root` mapping so reducible groups work too.
+//! 2. Replaces `y ← g·y`  (one positive root becomes negative; `ly` drops by 1).
+//! 3. If `g` is also a left descent of `x`, replaces `x ← g·x`; `lx` drops by 1.
 //!
 //! By the standard Bruhat recursion:
-//!   `x ≤ y  ⟺  s·x ≤ s·y`  (when `l(s·x) = l(x) − 1`)
-//!   `x ≤ y  ⟺  x ≤ s·y`    (when `l(s·x) = l(x) + 1`)
+//!   `x ≤ y  ⟺  g·x ≤ g·y`  (when `l(g·x) = l(x) − 1`)
+//!   `x ≤ y  ⟺  x ≤ g·y`    (when `l(g·x) = l(x) + 1`)
 //!
 //! Termination: `ly` decreases by 1 on every iteration, so the loop
 //! terminates after at most `ly` steps.
@@ -71,57 +73,27 @@ pub fn leq(group: &CoxeterGroup, x: &Perm, y: &Perm) -> bool {
     // Main loop — invariant: cx ≤ cy in the original order iff cx ≤ cy now.
     // Terminates because ly decreases by 1 each iteration.
     while lx < ly && lx != 0 && ly != 0 {
-        // Pick the smallest left descent s of cy.
-        // s is a left descent of cy iff cy[simple_root[s]] ≥ N,
-        // which by the mapping simple_root[s] == s for irreducible groups
-        // reduces to cy[s] ≥ N.  For generality we use the PyCox approach:
-        // find the first position in 0..N with cy[position] ≥ N, then
-        // identify which simple root that is.
+        // Pick the first generator g whose simple root is a left descent of cy.
+        // A generator g is a left descent of cy iff cy[simple_root[g]] ≥ N.
         //
-        // PyCox: `s = 0; while y[s] < W.N: s += 1`
-        // This scans positions 0, 1, 2, … and stops at the first i where
-        // cy[i] ≥ N.  Because simple roots are 0..rank and lie in 0..N,
-        // the first such i IS the index of the leftmost left-descent generator.
-        // (Positive roots are 0..N; negative roots are N..2N.)
-        let s = (0..n)
-            .find(|&i| cy.0[i] as usize >= n)
+        // PyCox: `s = 0; while y[s] < W.N: s += 1` then uses `W.permgens[s]`.
+        // That code scans positions 0..N and the position index doubles as the
+        // generator index (PyCox always places simple root g at position g).
+        // We scan generators 0..rank directly, using simple_root[g] for the
+        // position, which is correct for both irreducible and reducible groups.
+        let g = (0..group.rank)
+            .find(|&g| cy.0[group.simple_root[g]] as usize >= n)
             .expect("ly > 0 implies at least one left descent");
 
-        // If s is also a left descent of cx, strip cx too.
+        // If g is also a left descent of cx, strip cx too.
         // PyCox: `if x[s]>=W.N: x = tuple([x[r] for r in W.permgens[s]]); lx-=1`
-        if cx.0[s] as usize >= n {
-            // Left-multiply cx by the generator whose permgen maps position s.
-            // We need to identify which generator s corresponds to.
-            // By PyCox convention, the permgen scan walks positions 0..N and
-            // position i is the simple root of generator i.  But for reducible
-            // groups simple_root[gen] may not equal gen.
-            //
-            // However, the PyCox scan `while y[s] < W.N: s += 1` finds a
-            // *position index* s (not a generator index).  In PyCox,
-            // `W.permgens[s]` is the permgen of generator s, and simple root s
-            // is at position s (PyCox always has simple root s at position s
-            // in the root list — for all built-in types).
-            //
-            // Our Rust group guarantees simple_root[s] == s for irreducible
-            // groups; for reducible groups simple_root may differ.  To be safe
-            // we find the generator g whose simple_root[g] == s.
-            let g = group
-                .simple_root
-                .iter()
-                .position(|&sr| sr == s)
-                .expect("every position in 0..rank is a simple root");
-
+        if cx.0[group.simple_root[g]] as usize >= n {
             cx = group.permgens[g].then(&cx);
             lx -= 1;
         }
 
         // Always strip cy.
         // PyCox: `y = tuple([y[r] for r in W.permgens[s]]); ly -= 1`
-        let g = group
-            .simple_root
-            .iter()
-            .position(|&sr| sr == s)
-            .expect("every position in 0..rank is a simple root");
         cy = group.permgens[g].then(&cy);
         ly -= 1;
     }
@@ -199,6 +171,11 @@ mod tests {
     // -----------------------------------------------------------------------
     fn subword_closure(group: &CoxeterGroup, y_word: &[u8]) -> HashSet<Perm> {
         let l = y_word.len();
+        // 1u64 << l is only defined for l < 64; groups tested here have l ≤ 9.
+        debug_assert!(
+            l < 64,
+            "subword_closure: word length {l} would overflow u64 mask"
+        );
         let mut set = HashSet::new();
         for mask in 0u64..(1u64 << l) {
             let subword: Vec<u8> = (0..l)
@@ -275,14 +252,14 @@ mod tests {
         let n = table.len();
         for i in 0..n {
             for j in 0..n {
-                let both = leq(&group, &perms[i], &perms[j]) && leq(&group, &perms[j], &perms[i]);
+                let ij = leq(&group, &perms[i], &perms[j]);
+                let ji = leq(&group, &perms[j], &perms[i]);
+                let both = ij && ji;
                 let equal = perms[i] == perms[j];
                 assert_eq!(
                     both,
                     equal,
-                    "antisymmetry violated at i={i}, j={j}: leq(i,j)={}, leq(j,i)={}, equal={equal}",
-                    leq(&group, &perms[i], &perms[j]),
-                    leq(&group, &perms[j], &perms[i])
+                    "antisymmetry violated at i={i}, j={j}: leq(i,j)={ij}, leq(j,i)={ji}, equal={equal}",
                 );
             }
         }
