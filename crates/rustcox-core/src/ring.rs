@@ -94,11 +94,17 @@ impl RootCoeff for GoldenInt {
     }
 
     fn add(&self, o: &Self) -> Self {
-        Self::new(self.a + o.a, self.b + o.b)
+        Self::new(
+            self.a.checked_add(o.a).expect("GoldenInt add/sub overflow"),
+            self.b.checked_add(o.b).expect("GoldenInt add/sub overflow"),
+        )
     }
 
     fn sub(&self, o: &Self) -> Self {
-        Self::new(self.a - o.a, self.b - o.b)
+        Self::new(
+            self.a.checked_sub(o.a).expect("GoldenInt add/sub overflow"),
+            self.b.checked_sub(o.b).expect("GoldenInt add/sub overflow"),
+        )
     }
 
     /// Multiply two ℤ[φ] elements using i128 intermediates to avoid overflow.
@@ -136,7 +142,7 @@ impl RootCoeff for GoldenInt {
     /// - x < 0, y ≥ 0 → v ≥ 0 iff |x| ≤ y√5 iff 5y² ≥ x²
     /// - zero: a = 0, b = 0 → true
     fn is_nonneg(&self) -> bool {
-        let x: i128 = 2 * self.a as i128 + self.b as i128;
+        let x: i128 = 2 * (self.a as i128) + self.b as i128;
         let y: i128 = self.b as i128;
         match (x >= 0, y >= 0) {
             (true, true) => true,
@@ -242,6 +248,14 @@ mod tests {
         assert!(GoldenInt::zero().is_zero());
         assert!(!GoldenInt::new(1, 0).is_zero());
         assert!(!GoldenInt::new(0, 1).is_zero());
+    }
+
+    #[test]
+    fn golden_int_mul_general() {
+        assert_eq!(
+            GoldenInt::new(2, 3).mul(&GoldenInt::new(1, -1)),
+            GoldenInt::new(-1, -2)
+        );
     }
 
     #[test]
