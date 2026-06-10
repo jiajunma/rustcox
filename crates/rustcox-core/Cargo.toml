@@ -1,3 +1,4 @@
+# NOTE: integration tests read ../../golden — not runnable from a published tarball
 [package]
 name = "rustcox-core"
 description = "Kazhdan-Lusztig polynomials and cells for finite Coxeter groups (Rust port of PyCox)"

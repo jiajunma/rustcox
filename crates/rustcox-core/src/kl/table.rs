@@ -190,7 +190,7 @@ impl KlTable {
     ///
     /// In `Stored` mode: pool lookup.  If `NO_MU` sentinel, returns zero.
     ///
-    /// For the Stored-mode hot path prefer [`mu_ref`] to avoid cloning.
+    /// For the Stored-mode hot path prefer `mu_ref` to avoid cloning.
     #[inline]
     pub fn mu(&self, s: usize, y: ElmIdx, w: ElmIdx) -> Laurent {
         debug_assert!(y <= w, "mu: y={y} > w={w}");
@@ -241,7 +241,7 @@ impl KlTable {
     /// Return a reference to `μ^s_{y,w}` without cloning (Stored mode only).
     ///
     /// Returns `None` in Implicit mode or when no mu slot exists for `(y, s, w)`.
-    /// Task 9's stored-mode hot path should prefer this over [`mu`] to avoid
+    /// Task 9's stored-mode hot path should prefer this over `mu` to avoid
     /// pool clones.
     pub fn mu_ref(&self, s: usize, y: ElmIdx, w: ElmIdx) -> Option<&Laurent> {
         debug_assert!(y <= w, "mu_ref: y={y} > w={w}");

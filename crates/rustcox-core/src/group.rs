@@ -16,8 +16,8 @@
 //! |-----------|----------|-----------------|
 //! | `word_to_perm(w)` | `wordtoperm` | left-fold: acc = then(acc, P_si) for si in w |
 //! | `perm_to_word(p)` | `permtoword` | strips smallest left descent; sets p ← then(P_s, p) |
-//! | `perm_length(p)` | `permlength` | #{i < N : p[i] ≥ N} |
-//! | `left_descents(p)` | `leftdescentsetperm` | {s : p[s] ≥ N} |
+//! | `perm_length(p)` | `permlength` | #{i < N : p\[i\] ≥ N} |
+//! | `left_descents(p)` | `leftdescentsetperm` | {s : p\[s\] ≥ N} |
 //! | `right_descents(p)` | `rightdescentsetperm` | left descents of p⁻¹ |
 //! | `longest_perm()` | `longestperm` | left-multiply by s until all s are descents |
 
@@ -381,7 +381,7 @@ impl CoxeterGroup {
     /// Convert a word to a `CoxElm` (images of simple roots under the permutation).
     ///
     /// Replicates PyCox `wordtocoxelm`: computes the full 2N permutation via
-    /// [`word_to_perm`] and extracts the simple-root images via `coxelm_sr`.
+    /// `word_to_perm` and extracts the simple-root images via `coxelm_sr`.
     pub fn word_to_coxelm(&self, w: &[Gen]) -> crate::element::CoxElm {
         self.word_to_perm(w).coxelm_sr(&self.simple_root)
     }
@@ -428,7 +428,7 @@ impl CoxeterGroup {
     /// Return a reference to the longest element w₀.
     ///
     /// Computed lazily and cached.  Replicates PyCox `longestperm`:
-    /// start from the identity; while ∃ s ∈ rank with p[simple_root[s]] < N,
+    /// start from the identity; while ∃ s ∈ rank with p\[simple_root\[s\]\] < N,
     /// set `p ← then(P_s, p)` (left-multiply by s).
     ///
     /// Composition note: `then(P_s, p)[i] = p[P_s[i]]`, matching PyCox

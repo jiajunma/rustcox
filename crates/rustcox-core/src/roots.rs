@@ -34,7 +34,7 @@ pub struct RootSystem {
     /// All 2N coordinate vectors, for `CartanMat::Int` only.
     /// Each inner vector has length `rank`.
     pub roots_int: Option<Vec<Vec<i64>>>,
-    /// Generator permutations.  `permgens[s].0[i]` is the index of s(roots[i]).
+    /// Generator permutations.  `permgens[s].0\[i\]` is the index of s(roots\[i\]).
     /// Length is `rank`; each `Perm` has length 2N.
     pub permgens: Vec<Perm>,
 }

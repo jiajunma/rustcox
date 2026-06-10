@@ -7,6 +7,7 @@
 // Modules land task by task; see the implementation plan.
 pub mod bruhat;
 pub mod cartan;
+pub(crate) mod cartan_cyc;
 pub mod element;
 pub mod enumerate;
 pub mod group;

@@ -39,17 +39,17 @@ use super::RootCoeff;
 /// cyclotomic field. Promoted to the partner's order on first combination.
 const SENTINEL: u32 = 0;
 
-/// An element of ℤ[ζ]/(Φ_n(ζ)), with ζ = ζ_n = e^{2πi/n}.
+/// An element of ℤ\[ζ\]/(Φ_n(ζ)), with ζ = ζ_n = e^{2πi/n}.
 ///
 /// Invariants (upheld by [`CycInt::new`]):
 /// - `coeffs.len() <= deg(Φ_n) = φ(n)` (Euler totient), or `coeffs` is empty;
 /// - trailing zeros are trimmed (so the value `0` is the empty vector);
-/// - `n == 0` ([`SENTINEL`]) iff the value is a rational constant.
+/// - `n == 0` (`SENTINEL`) iff the value is a rational constant.
 ///
 /// # Equality and hashing
 ///
 /// `PartialEq`/`Eq`/`Hash` are *value*-based, not representation-based. A
-/// rational constant (e.g. `from_int(1)`, order [`SENTINEL`]) compares and
+/// rational constant (e.g. `from_int(1)`, order `SENTINEL`) compares and
 /// hashes equal to the same constant carried in any cyclotomic field
 /// (`CycInt::new(7, vec![1])`). This is required because the root-system BFS
 /// stores `Vec<CycInt>` keys that mix sentinel constants (from `from_int`/
@@ -98,7 +98,7 @@ impl std::hash::Hash for CycInt {
 impl CycInt {
     /// Build `Σ coeffs[i]·ζ_n^i` reduced modulo Φ_n.
     ///
-    /// `n` must be ≥ 1 (a genuine cyclotomic order) or the [`SENTINEL`] value
+    /// `n` must be ≥ 1 (a genuine cyclotomic order) or the `SENTINEL` value
     /// `0` for a rational constant. For a sentinel, `coeffs` must have length
     /// ≤ 1 (a bare integer).
     ///

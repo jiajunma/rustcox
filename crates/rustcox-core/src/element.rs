@@ -31,7 +31,7 @@ impl Perm {
         Perm((0..n2 as u32).collect::<Vec<_>>().into_boxed_slice())
     }
 
-    /// Compose `self` followed by `q`: result[i] = q[self[i]].
+    /// Compose `self` followed by `q`: result\[i\] = q\[self\[i\]\].
     ///
     /// This is PyCox's `permmult(self, q)`:
     /// `then(p, q)[i] = q[p[i]]` — apply `self` first, then `q`.
@@ -41,7 +41,7 @@ impl Perm {
         Perm(data.into_boxed_slice())
     }
 
-    /// Return the inverse permutation: inv[p[i]] = i.
+    /// Return the inverse permutation: inv\[p\[i\]\] = i.
     ///
     /// Replicates PyCox `perminverse`.
     pub fn inverse(&self) -> Perm {

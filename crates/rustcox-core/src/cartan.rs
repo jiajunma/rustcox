@@ -6,24 +6,23 @@
 //! - The (i,j) entry of the Cartan matrix is 2·(eᵢ,eⱼ)/(eᵢ,eᵢ) where
 //!   e₀,e₁,… are the simple roots.
 //! - Diagonal entries are 2.
-//! - Type B_n: node 0 is the short root end; entry c[0][1] = −2, c[1][0] = −1.
+//! - Type B_n: node 0 is the short root end; entry c\[0\]\[1\] = −2, c\[1\]\[0\] = −1.
 //!   Diagram: 0 ≤= 1 — 2 — … — n−1.
-//! - Type C_n: node 0 is the long root end; entry c[1][0] = −2, c[0][1] = −1.
+//! - Type C_n: node 0 is the long root end; entry c\[1\]\[0\] = −2, c\[0\]\[1\] = −1.
 //!   Diagram: 0 => 1 — 2 — … — n−1.
 //! - Type D_n (n ≥ 3): nodes 0,1 are the fork tips, node 2 is the fork centre.
-//! - Type G₂: [[2,−1],[−3,2]] (node 0 short, node 1 long).
-//! - Type F₄: nodes 0–3 with double bond between 1–2 (c[2][1]=−2, c[1][2]=−1).
+//! - Type G₂: \[\[2,−1\],\[−3,2\]\] (node 0 short, node 1 long).
+//! - Type F₄: nodes 0–3 with double bond between 1–2 (c\[2\]\[1\]=−2, c\[1\]\[2\]=−1).
 //! - Types H₃, H₄: off-diagonal entries involving node 0 are ±φ where
 //!   φ = (1+√5)/2, represented as [`GoldenInt`]`{a:0, b:1}`.
 //! - Type I₂(m): integer Cartan for m∈{3,4,6}; golden (φ) for m=5; all other
 //!   m use cyclotomic integers [`CycInt`] (the `Cyc` variant) following PyCox's
-//!   `cartanmat` exactly (even/odd m differ — see [`cartan_i`]).
-//!
-// TODO(follow-up): split dihedral helpers (cartan_i_cyc, coxeter_from_cyc,
-// bezout_coeff1) into cartan_cyc.rs — file at 905 lines
+//!   `cartanmat` exactly (even/odd m differ — see `cartan_i`).
 
 use crate::ring::{CycInt, GoldenInt, RootCoeff};
 use thiserror::Error;
+
+use crate::cartan_cyc::{cartan_i_cyc, coxeter_from_cyc};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -67,9 +66,9 @@ impl std::fmt::Display for Series {
 pub enum CartanMat {
     /// All entries are integers (crystallographic types and most dihedral).
     Int(Vec<Vec<i64>>),
-    /// Entries live in ℤ[φ] (types H₃, H₄, I₂(5)).
+    /// Entries live in ℤ\[φ\] (types H₃, H₄, I₂(5)).
     Golden(Vec<Vec<GoldenInt>>),
-    /// Entries live in ℤ[ζ_m]/(Φ_m) (dihedral I₂(m), m ∉ {3,4,5,6}).
+    /// Entries live in ℤ\[ζ_m\]/(Φ_m) (dihedral I₂(m), m ∉ {3,4,5,6}).
     Cyc(Vec<Vec<CycInt>>),
 }
 
@@ -331,51 +330,6 @@ fn cartan_i(m: u32, rank: usize) -> Result<CartanMat, Error> {
     }
 }
 
-/// First Bézout coefficient `s` in `gcd(a, b) = s·a + t·b`, matching PyCox's
-/// `gcdex(a, b)['coeff1']` (extended Euclid, GAP-style sign conventions).
-fn bezout_coeff1(a: i64, b: i64) -> i64 {
-    // f = |a|, fm = sign(a); g = |b|, gm = 0   (PyCox initialisation)
-    let (mut f, mut fm) = if a >= 0 { (a, 1_i64) } else { (-a, -1_i64) };
-    let (mut g, mut gm) = if b >= 0 { (b, 0_i64) } else { (-b, 0_i64) };
-    while g != 0 {
-        let q = f.div_euclid(g);
-        let (h, hm) = (g, gm);
-        g = f - q * g;
-        gm = fm - q * gm;
-        f = h;
-        fm = hm;
-    }
-    fm
-}
-
-/// Build the cyclotomic I₂(m) Cartan matrix for m ∉ {3,4,5,6}.
-///
-/// See [`cartan_i`] for the even/odd construction rules.
-fn cartan_i_cyc(m: u32) -> Vec<Vec<CycInt>> {
-    let two = CycInt::from_int(2);
-    let neg_one = CycInt::from_int(-1);
-    // ζ_m^k as a CycInt (negative k handled via ζ^{-1} = ζ^{m-1}).
-    let zeta_pow = |k: i64| -> CycInt {
-        let e = k.rem_euclid(m as i64) as u32;
-        let mut coeffs = vec![0_i64; e as usize + 1];
-        coeffs[e as usize] = 1;
-        CycInt::new(m, coeffs)
-    };
-
-    if m % 2 == 0 {
-        // [[2, -1], [-2 - ir(m/2), 2]], ir(m/2) = ζ_m + ζ_m^{-1}.
-        let ir = zeta_pow(1).add(&zeta_pow(-1));
-        let c10 = CycInt::from_int(-2).sub(&ir);
-        vec![vec![two.clone(), neg_one], vec![c10, two]]
-    } else {
-        // d = gcdex(2+m, 2m)['coeff1']; z1 = ζ^d + ζ^{-d} (negate if d even).
-        let d = bezout_coeff1(2 + m as i64, 2 * m as i64);
-        let base = zeta_pow(d).add(&zeta_pow(-d));
-        let z1 = if d % 2 == 0 { base.neg() } else { base };
-        vec![vec![two.clone(), z1.clone()], vec![z1, two]]
-    }
-}
-
 // ---------------------------------------------------------------------------
 // degrees_of
 // ---------------------------------------------------------------------------
@@ -559,28 +513,6 @@ fn golden_off_diag_order(c_st: &GoldenInt, c_ts: &GoldenInt) -> u32 {
     panic!(
         "unexpected golden Cartan pair ({c_st:?}, {c_ts:?}): product={product:?}, 1-c_st={one_minus_c_st:?}"
     );
-}
-
-/// Coxeter matrix for a cyclotomic ([`CartanMat::Cyc`]) Cartan matrix.
-///
-/// The `Cyc` variant is produced solely by [`cartan_i`] for the dihedral group
-/// I₂(m) with m ∉ {3,4,5,6}, so it is always a 2×2 matrix whose single edge has
-/// Coxeter order m. The order m equals the cyclotomic field order carried by any
-/// off-diagonal entry (`CycInt::order`); diagonal `2`s are sentinel constants.
-fn coxeter_from_cyc(mat: &[Vec<CycInt>]) -> Vec<Vec<u32>> {
-    let rows = mat.len();
-    let cols = mat.first().map(|r| r.len()).unwrap_or(0);
-    assert_eq!(
-        rows, 2,
-        "Cyc Cartan matrices are dihedral (2×2); got {rows}×{cols}"
-    );
-    // Recover m from whichever off-diagonal entry carries a real field order.
-    let m = mat[0][1].order().max(mat[1][0].order());
-    assert!(
-        m >= 3,
-        "Cyc dihedral Coxeter order must be ≥ 3, got {m} (entries carry no field order)"
-    );
-    vec![vec![1, m], vec![m, 1]]
 }
 
 // ---------------------------------------------------------------------------
@@ -770,66 +702,6 @@ mod tests {
         let cartan = cartan_mat(Series::I(5), 2).unwrap();
         let cox = coxeter_mat_from_cartan(&cartan);
         assert_eq!(cox, vec![vec![1, 5], vec![5, 1]]);
-    }
-
-    // -- I2(m) cyclotomic Cartan matrices (transcribed from PyCox) ----------
-
-    /// Dense (low-degree-first) coefficient vectors of the two off-diagonal
-    /// entries of the I₂(m) cyclotomic Cartan matrix, for cross-checking
-    /// against PyCox `cartanmat("I?", 2)`.
-    fn cyc_off_diags(m: u32) -> (Vec<i64>, Vec<i64>) {
-        match cartan_mat(Series::I(m), 2).unwrap() {
-            CartanMat::Cyc(mat) => (mat[0][1].coeffs().to_vec(), mat[1][0].coeffs().to_vec()),
-            other => panic!("I{m} should be Cyc, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn i7_cyc_matches_pycox() {
-        // PyCox I7: symmetric, c01 = c10 = ζ^3 + ζ^4 → coeffs [0,0,0,1,1].
-        let (c01, c10) = cyc_off_diags(7);
-        assert_eq!(c01, vec![0, 0, 0, 1, 1]);
-        assert_eq!(c10, vec![0, 0, 0, 1, 1]);
-    }
-
-    #[test]
-    fn i8_cyc_matches_pycox() {
-        // PyCox I8: asymmetric, c01 = -1, c10 = -2 - ζ + ζ^3 → coeffs [-2,-1,0,1].
-        let (c01, c10) = cyc_off_diags(8);
-        assert_eq!(c01, vec![-1]); // bare integer -1
-        assert_eq!(c10, vec![-2, -1, 0, 1]);
-    }
-
-    #[test]
-    fn i9_i12_cyc_match_pycox() {
-        // Odd m=9: ζ^4 + ζ^5 → [0,0,0,0,1,1].
-        let (c01, _) = cyc_off_diags(9);
-        assert_eq!(c01, vec![0, 0, 0, 0, 1, 1]);
-        // Even m=12: c10 = -2 - 2ζ + ζ^3 → [-2,-2,0,1]; c01 = -1.
-        let (c01_12, c10_12) = cyc_off_diags(12);
-        assert_eq!(c01_12, vec![-1]);
-        assert_eq!(c10_12, vec![-2, -2, 0, 1]);
-    }
-
-    #[test]
-    fn i7_i8_coxeter_mats() {
-        let cox7 = coxeter_mat_from_cartan(&cartan_mat(Series::I(7), 2).unwrap());
-        assert_eq!(cox7, vec![vec![1, 7], vec![7, 1]]);
-        let cox8 = coxeter_mat_from_cartan(&cartan_mat(Series::I(8), 2).unwrap());
-        assert_eq!(cox8, vec![vec![1, 8], vec![8, 1]]);
-    }
-
-    #[test]
-    fn bezout_coeff1_matches_pycox() {
-        // PyCox gcdex(2+m, 2m)['coeff1'] values for odd m (validated against
-        // the reference): m=7→-3, m=9→5, m=11→-5, m=13→7, m=15→-7.
-        assert_eq!(bezout_coeff1(9, 14), -3);
-        assert_eq!(bezout_coeff1(11, 18), 5);
-        assert_eq!(bezout_coeff1(13, 22), -5);
-        assert_eq!(bezout_coeff1(15, 26), 7);
-        assert_eq!(bezout_coeff1(17, 30), -7);
-        // gcdex doc example: 1 = 4*4 + (-1)*15 ⇒ coeff1(4,15) = 4.
-        assert_eq!(bezout_coeff1(4, 15), 4);
     }
 
     // -- degrees_of ---------------------------------------------------------

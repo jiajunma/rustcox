@@ -18,8 +18,8 @@
 //!
 //! Each `(w, y)` entry gets three things, in order:
 //!
-//! 1. **Bruhat flag** ([`bruhat_flag`]) — comparable (`c`) or not (`f`).
-//! 2. **P̃_{y,w}** ([`compute_h`] / [`compute_h_uneq`]) — the KL polynomial.
+//! 1. **Bruhat flag** (`bruhat_flag`) — comparable (`c`) or not (`f`).
+//! 2. **P̃_{y,w}** (`compute_h` / `compute_h_uneq`) — the KL polynomial.
 //! 3. **mu** — in equal-parameter mode a presence flag (value derived on
 //!    demand from the polynomial, [`MuMode::Implicit`]); in unequal-parameter
 //!    mode an explicit Laurent value interned into per-generator pools
@@ -41,10 +41,10 @@
 //!
 //! # Interface for the parallel driver (Task 12)
 //!
-//! [`compute_row`] is the single reusable row kernel.  It is parameterised
-//! over a read-only [`KlCtx`] (borrows of the element table, weights,
+//! `compute_row` is the single reusable row kernel.  It is parameterised
+//! over a read-only `KlCtx` (borrows of the element table, weights,
 //! `lweights`, the **completed** rows, the **frozen** global polynomial pool,
-//! and the **frozen** mu pools) and returns a [`RowResult`]: the per-`y`
+//! and the **frozen** mu pools) and returns a `RowResult`: the per-`y`
 //! polynomial *values* of this row, the mu presence flags (equal) or mu
 //! *values* (unequal).  The kernel never touches the global pools for
 //! interning — same-row shortcut reads come from the row's own freshly
@@ -54,8 +54,8 @@
 //! then interned sequentially afterwards in `(w asc, y desc)` order to
 //! reproduce the sequential pools exactly.
 //!
-//! The sequential driver ([`klpolynomials_seq`]) calls [`compute_row`] for
-//! each `w` and immediately interns its [`RowResult`] in descending-`y` order.
+//! The sequential driver ([`klpolynomials_seq`]) calls `compute_row` for
+//! each `w` and immediately interns its `RowResult` in descending-`y` order.
 
 use crate::{
     element::ElmIdx,
@@ -503,7 +503,7 @@ pub(crate) fn compute_row(w: ElmIdx, ctx: &KlCtx<'_>) -> RowResult {
 /// Validates `opts` against `group`, selects [`MuMode`] from the
 /// equal/unequal-parameter split (`uneq = not all weights == 1`), builds the
 /// element table and an empty table, seeds row `0`, and fills rows `1..n` via
-/// [`compute_row`], interning each row's values in `(w asc, y desc)` order so
+/// `compute_row`, interning each row's values in `(w asc, y desc)` order so
 /// the pools grow in PyCox's exact insertion order.
 pub fn klpolynomials_seq(group: &CoxeterGroup, opts: &KlOpts) -> Result<KlTable, KlError> {
     opts.validate(group)?;

@@ -8,13 +8,13 @@
 //!
 //! # Why it is deterministic
 //!
-//! The row kernel [`compute_row`] is pure: it reads only the **frozen** lower
+//! The row kernel `compute_row` is pure: it reads only the **frozen** lower
 //! layers (completed rows + frozen pools) and the in-progress row's own buffer.
 //! The *only* same-length cross-row dependency is the inverse-symmetry read of
 //! row `inva[w]` (taken when `inva[w] < w`).  We confine that dependency to
 //! **pair-units** `{w, inva[w]}`: a unit owns both rows, computes the smaller
 //! (`min`) first, then computes the larger (`max`) with partner access to the
-//! `min` row's freshly computed [`RowResult`].  No unit reads another unit's
+//! `min` row's freshly computed `RowResult`.  No unit reads another unit's
 //! in-flight data, so units within a layer are embarrassingly parallel.
 //!
 //! Interning (pool growth) is the *only* order-sensitive step, and it is done
@@ -32,7 +32,7 @@
 //!    `layer_chunk = Some(k)` the units are processed in consecutive chunks of
 //!    `k` to bound in-flight work; the result is independent of `k`.
 //! 3. **Intern** (sequential): flatten the layer's `(w, RowResult)` pairs, sort
-//!    by `w` ascending, and intern through the shared [`Interner`] — identical
+//!    by `w` ascending, and intern through the shared `Interner` — identical
 //!    pool growth to the sequential driver.
 
 use crate::{
