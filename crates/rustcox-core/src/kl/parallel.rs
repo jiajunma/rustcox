@@ -121,13 +121,20 @@ fn run_layered(group: &CoxeterGroup, opts: &KlOpts) -> Result<KlTable, KlError> 
         // ---- Compute phase (parallel over units, chunked) ----
         // Each unit yields (w, RowResult) entries.  Chunking bounds in-flight
         // work but does not affect the result (interning is whole-layer).
+        // Memory note: chunking limits parallel fan-out but layer_results still
+        // accumulates the full layer's RowResults before interning begins —
+        // peak allocation is one layer's worth of uninterned polynomial values.
         let chunk = opts.layer_chunk.filter(|&k| k > 0).unwrap_or(units.len());
         let mut layer_results: Vec<(ElmIdx, RowResult)> = Vec::with_capacity(end - start);
 
         for unit_chunk in units.chunks(chunk.max(1)) {
             let mut chunk_out: Vec<(ElmIdx, RowResult)> = unit_chunk
                 .par_iter()
-                .flat_map_iter(|unit| compute_unit(*unit, n_pos, uneq, &table).into_iter())
+                .flat_map_iter(|unit| {
+                    // compute_unit returns (first, Option<second>) — zero allocs.
+                    let (first, second) = compute_unit(*unit, n_pos, uneq, &table);
+                    std::iter::once(first).chain(second)
+                })
                 .collect();
             layer_results.append(&mut chunk_out);
         }
@@ -199,17 +206,26 @@ fn make_ctx<'a>(
     }
 }
 
-/// Compute the row(s) of one unit, returning `(w, RowResult)` entries.
+/// Compute the row(s) of one unit, returning a `(first, Option<second>)` tuple.
+///
+/// Returns zero heap allocations: a [`Unit::Single`] yields `(entry, None)` and
+/// a [`Unit::Pair`] yields `(min_entry, Some(max_entry))`.  The caller flattens
+/// this via `into_iter()` at the collection site.
 ///
 /// A [`Unit::Pair`] computes `min` first (no partner), then `max` with partner
 /// access to the `min` result so its inverse-symmetry read of row `min` is
 /// served from `min`'s freshly computed values rather than the not-yet-interned
 /// global rows.
-fn compute_unit(unit: Unit, n_pos: u32, uneq: bool, table: &KlTable) -> Vec<(ElmIdx, RowResult)> {
+fn compute_unit(
+    unit: Unit,
+    n_pos: u32,
+    uneq: bool,
+    table: &KlTable,
+) -> ((ElmIdx, RowResult), Option<(ElmIdx, RowResult)>) {
     match unit {
         Unit::Single(w) => {
             let ctx = make_ctx(table, n_pos, uneq, None);
-            vec![(w, compute_row(w, &ctx))]
+            ((w, compute_row(w, &ctx)), None)
         }
         Unit::Pair { min, max } => {
             // Compute the smaller index first, with no partner.
@@ -220,7 +236,7 @@ fn compute_unit(unit: Unit, n_pos: u32, uneq: bool, table: &KlTable) -> Vec<(Elm
             // row `min` (== inva[max]), resolved from `min_res`.
             let max_ctx = make_ctx(table, n_pos, uneq, Some((min, &min_res)));
             let max_res = compute_row(max, &max_ctx);
-            vec![(min, min_res), (max, max_res)]
+            ((min, min_res), Some((max, max_res)))
         }
     }
 }

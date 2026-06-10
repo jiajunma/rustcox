@@ -108,7 +108,7 @@ pub(crate) struct KlCtx<'a> {
     /// is the inverse-symmetry read of row `inva[w]`, which is exactly this
     /// partner.  Because the partner row is not yet interned in `rows`, its
     /// freshly computed values are resolved from `result` instead.  See
-    /// [`KlCtx::partner_pol_at`].
+    /// [`KlCtx::inverse_sym_pol`].
     pub partner: Option<(ElmIdx, &'a RowResult)>,
 }
 
@@ -156,6 +156,17 @@ impl KlCtx<'_> {
                 };
             }
         }
+        // In sequential mode (partner == None) same-layer reads of already-interned
+        // rows are legitimate (iw < w, row complete).  In parallel mode with a
+        // partner, any non-partner inverse-symmetry read must target a strictly
+        // shorter (already-interned) row — self-documents the parallel-safety
+        // contract: iw != partner and must already be in `rows`.
+        debug_assert!(
+            self.partner.is_none() || (iw as usize) < self.rows.len(),
+            "non-partner inverse-symmetry read must target a shorter \
+             already-interned row in parallel mode (iw={iw}, rows.len={})",
+            self.rows.len()
+        );
         self.pol_at(iw, iy)
             .cloned()
             .expect("inverse-symmetry entry must be comparable")

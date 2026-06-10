@@ -27,7 +27,12 @@ pub struct KlOpts {
     pub weights: Vec<u32>,
     /// Number of threads for parallel computation.  `None` = use Rayon default.
     pub threads: Option<usize>,
-    /// Layer chunk size for parallel computation.  `None` = automatic.
+    /// Layer chunk size for parallel computation.  `None` = automatic (whole layer).
+    ///
+    /// Controls how many computation units are processed per Rayon chunk within a
+    /// length layer.  The result is independent of chunk size — chunking only bounds
+    /// peak in-flight memory.  `Some(0)` is normalized to no-chunking (equivalent
+    /// to `None`): the driver applies `.filter(|&k| k > 0).unwrap_or(units.len())`.
     pub layer_chunk: Option<usize>,
 }
 

@@ -75,15 +75,24 @@ fn layer_chunking_is_deterministic() {
     }
 }
 
-/// `threads = Some(1)` falls back to the sequential driver and is identical.
+/// `threads = Some(0)` and `threads = Some(1)` both fall back to the sequential
+/// driver and must be byte-identical to it.
 #[test]
 fn threads_one_falls_back() {
     let g = CoxeterGroup::from_type("B2").unwrap();
     let seq = klpolynomials_seq(&g, &KlOpts::equal(g.rank)).unwrap();
-    let opts = KlOpts {
+
+    let opts_one = KlOpts {
         weights: vec![1; g.rank],
         threads: Some(1),
         layer_chunk: None,
     };
-    assert_eq!(klpolynomials(&g, &opts).unwrap(), seq, "B2 t=1");
+    assert_eq!(klpolynomials(&g, &opts_one).unwrap(), seq, "B2 t=1");
+
+    let opts_zero = KlOpts {
+        weights: vec![1; g.rank],
+        threads: Some(0),
+        layer_chunk: None,
+    };
+    assert_eq!(klpolynomials(&g, &opts_zero).unwrap(), seq, "B2 t=0");
 }
