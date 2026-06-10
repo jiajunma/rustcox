@@ -81,6 +81,7 @@ impl CellData {
         // -------------------------------------------------------------------
         // 3. left cells = SCCs of the arrow digraph (edges w → y)
         // -------------------------------------------------------------------
+        // adj targets are ElmIdx (u32) used directly as vertex indices into adj.
         let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
         for &(w, y) in &arrows {
             adj[w as usize].push(y);
@@ -119,6 +120,7 @@ impl CellData {
 
         // raw_duflo[i] belongs to raw_cells[i], whose component is
         // comp_of[member]; map cell index → component index.
+        // Tarjan comp ids are assigned in reverse finish order, so cell index ≠ comp id.
         let cell_comp: Vec<usize> = raw_cells.iter().map(|c| comp_of[c[0] as usize]).collect();
         let mut raw_lorder: Vec<Vec<bool>> = vec![vec![false; num_comp]; num_comp];
         for c1 in 0..num_comp {
@@ -260,6 +262,7 @@ fn build_deltas(t: &KlTable, n: usize) -> (Vec<i32>, Vec<i64>) {
 /// Returns `(d, checks_ok)`.
 fn duflo_of_cell(cell: &[ElmIdx], adelta: &[i32], ndelta: &[i64]) -> (ElmIdx, bool) {
     // i0 = first index with ndelta != 0.
+    // guarded by KlOpts::validate AllZeroWeights: with some positive weight, P̃_{0,w} is non-zero.
     let i0 = cell
         .iter()
         .position(|&w| ndelta[w as usize] != 0)
@@ -382,7 +385,9 @@ fn tarjan_scc(adj: &[Vec<u32>], n: usize) -> (Vec<usize>, usize) {
             }
             if ci < adj[vu].len() {
                 // Advance the cursor before recursing.
-                call.last_mut().unwrap().1 = ci + 1;
+                call.last_mut()
+                    .expect("call stack is non-empty: we just pattern-matched on call.last()")
+                    .1 = ci + 1;
                 let w = adj[vu][ci];
                 let wu = w as usize;
                 if index[wu] == UNVISITED {
@@ -394,7 +399,7 @@ fn tarjan_scc(adj: &[Vec<u32>], n: usize) -> (Vec<usize>, usize) {
                 // Done with v: if it's a root, pop an SCC.
                 if lowlink[vu] == index[vu] {
                     loop {
-                        let w = stack.pop().unwrap();
+                        let w = stack.pop().expect("Tarjan stack is non-empty: SCC root was pushed before its component is popped");
                         on_stack[w as usize] = false;
                         comp_of[w as usize] = num_comp;
                         if w == v {

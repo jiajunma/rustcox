@@ -96,6 +96,11 @@ impl KlOpts {
             }
         }
 
+        // Reject an all-zero weight vector: at least one generator must be positive.
+        if self.weights.iter().all(|&w| w == 0) {
+            return Err(KlError::AllZeroWeights);
+        }
+
         Ok(())
     }
 }
@@ -111,6 +116,8 @@ pub enum KlError {
     WeightsLen(usize, usize),
     #[error("generators {0} and {1} are conjugate (odd m) but have different weights")]
     ConjugateWeights(usize, usize),
+    #[error("at least one generator weight must be positive")]
+    AllZeroWeights,
     /// A code path not yet implemented in the current task.
     #[error("not yet implemented: {0}")]
     Unimplemented(&'static str),
@@ -165,6 +172,21 @@ mod tests {
         assert!(
             matches!(bad2.validate(&group), Err(KlError::ConjugateWeights(..))),
             "A3 [1,1,2] should fail ConjugateWeights"
+        );
+    }
+
+    /// B2 with all-zero weights → AllZeroWeights.
+    #[test]
+    fn klopts_validate_b2_all_zero_weights() {
+        let group = CoxeterGroup::from_type("B2").unwrap();
+        let bad = KlOpts {
+            weights: vec![0, 0],
+            threads: None,
+            layer_chunk: None,
+        };
+        assert!(
+            matches!(bad.validate(&group), Err(KlError::AllZeroWeights)),
+            "B2 [0,0] should fail AllZeroWeights"
         );
     }
 
