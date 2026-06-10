@@ -27,7 +27,7 @@
 //! `s·u ∈ self.vertices`, add arrow `pos → pos_of(s·u)`.  This mirrors
 //! `build_arrows`'s condition `weight == 0 || (sw > wu && weight > 0)` exactly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     element::{ElmIdx, Gen},
@@ -79,6 +79,10 @@ pub struct WGraph {
 
 impl WGraph {
     /// Build the W-graph of `cell` (element indices) from the KL table.
+    ///
+    /// Complexity: O(n²·rank) for the edge scan, where n = `cell.len()` and
+    /// rank = number of generators.  Suitable for single cells; for the full
+    /// group (n = |W|) the quadratic scan dominates — use only when necessary.
     ///
     /// For each unordered pair `{i, j}` of vertex positions (with `i < j`),
     /// find the Bruhat-comparable ordering `(y, w)` of the corresponding
@@ -186,33 +190,20 @@ impl WGraph {
         }
 
         // Build directed adjacency for Tarjan.
-        let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
-
-        // Helper: add u→v without duplicates.
-        let push_unique = |adj: &mut Vec<Vec<u32>>, u: usize, v: usize| {
-            if !adj[u].contains(&(v as u32)) {
-                adj[u].push(v as u32);
-            }
-        };
+        // Use per-row HashSets for O(1) dedup during construction, then discard
+        // them before calling tarjan_scc (which only needs Vec<Vec<u32>>).
+        let mut adj_sets: Vec<HashSet<u32>> = vec![HashSet::new(); n];
 
         // Type 1: mu-based arrows.
         //
         // Edge (pi, pj) with pi < pj stores mus for (y=vertices[pi], w=vertices[pj]).
-        // build_arrows condition: s ∈ I(y) AND s ∉ I(w) → arrow w→y, i.e., pj→pi.
-        // Symmetric:            s ∈ I(w) AND s ∉ I(y) → arrow y→w is NOT in build_arrows.
+        // build_arrows condition: s ∈ I(y=pi) AND s ∉ I(w=pj) → arrow w→y = pj→pi.
         //
-        // Wait: build_arrows also emits (wu, sw) for sw > wu (weight>0 case).
-        // That corresponds to type-2 arrows.  So type-1 is strictly:
-        //   s ∈ I(y=smaller) AND s ∉ I(w=larger) → arrow w→y (pj→pi).
-        //
-        // Note: in PyCox wgraph constructor, mmat[(y, x)] is set when
-        //   s ∈ Isets[x] AND s ∉ Isets[y]  (x < y as positions).
-        // Then decompose does pp0[y].append(x) = arrow y→x.
-        // In PyCox, x = position of Bruhat-smaller (smaller index in xset['elms']).
-        // So (y, x) means "y→x" where y=larger-index (Bruhat-larger = w),
-        // x=smaller-index (Bruhat-smaller = el).
-        // Condition: s ∈ Isets[x=smaller] AND s ∉ Isets[y=larger].
-        // Arrow: y→x = w→y_small (in our notation, pj→pi when pi<pj).
+        // The reverse (s ∈ I(w) AND s ∉ I(y)) is intentionally absent here.
+        // PyCox `klpolynomials` arrows block (pycox-ref/pycox_ref.py ≈10387–10394)
+        // only appends (w, y) when `s ∈ Isets[y=smaller]` AND `s ∉ Isets[w=larger]`,
+        // i.e. strictly asymmetric: only the Bruhat-smaller endpoint owning the
+        // descent generates a type-1 arrow (pointing toward it from the larger end).
         for (&(pi, pj), mus) in &self.edges {
             let pi = pi as usize;
             let pj = pj as usize;
@@ -227,13 +218,8 @@ impl WGraph {
                 let j_has_s = self.isets[pj].contains(&s_gen);
                 // build_arrows condition: s ∈ I(y=pi) AND s ∉ I(w=pj) → arrow w→y = pj→pi.
                 if i_has_s && !j_has_s {
-                    push_unique(&mut adj, pj, pi);
+                    adj_sets[pj].insert(pi as u32);
                 }
-                // The reverse condition (s ∈ I(w) AND s ∉ I(y)) is covered by
-                // the wgraph mmat constructor's y<x range — but here x < y as
-                // positions and the mu is defined as mu(s, y_small, w_large),
-                // so there is no separate "reverse mu".  This case never adds an
-                // arrow from the mu-based edges alone.
             }
         }
 
@@ -244,7 +230,7 @@ impl WGraph {
         //   sw > wu (ascent, s ∉ I(u)) AND weight > 0.
         //
         // Mirror that condition here.
-        for pos in 0..n {
+        for (pos, adj_row) in adj_sets.iter_mut().enumerate() {
             for s in 0..self.rank {
                 let s_gen = s as Gen;
                 let weight = self.weights[s];
@@ -253,11 +239,17 @@ impl WGraph {
                 if weight == 0 || !is_descent {
                     let sv_pos = self.lft_cell[pos * self.rank + s];
                     if sv_pos != u32::MAX {
-                        push_unique(&mut adj, pos, sv_pos as usize);
+                        adj_row.insert(sv_pos);
                     }
                 }
             }
         }
+
+        // Convert to Vec<Vec<u32>> and drop the HashSets before calling tarjan_scc.
+        let adj: Vec<Vec<u32>> = adj_sets
+            .into_iter()
+            .map(|s| s.into_iter().collect())
+            .collect();
 
         // Tarjan SCC.
         let (comp_of, num_comp) = tarjan_scc(&adj, n);
@@ -310,8 +302,13 @@ impl WGraph {
         let mut edges: HashMap<(u32, u32), Vec<Laurent>> = HashMap::new();
         for (&(pi, pj), mus) in &self.edges {
             if let (Some(&ni), Some(&nj)) = (old_to_new.get(&pi), old_to_new.get(&pj)) {
-                let (lo, hi) = if ni < nj { (ni, nj) } else { (nj, ni) };
-                edges.insert((lo, hi), mus.clone());
+                // pi < pj (invariant of self.edges), and sorted_pos is sorted
+                // ascending, so the position-sorted order is preserved: ni < nj.
+                debug_assert!(
+                    ni < nj,
+                    "edge ({pi},{pj}) mapped to ({ni},{nj}): ni must be < nj"
+                );
+                edges.insert((ni, nj), mus.clone());
             }
         }
 
@@ -437,6 +434,10 @@ mod tests {
                 1,
                 "B3 cell {cell_idx} ({cell:?}): expected 1 SCC, got {}",
                 comps.len()
+            );
+            assert_eq!(
+                comps[0].vertices, wg.vertices,
+                "B3 cell {cell_idx}: single component must cover all vertices"
             );
         }
     }

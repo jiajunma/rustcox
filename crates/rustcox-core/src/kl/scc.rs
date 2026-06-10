@@ -14,6 +14,7 @@
 /// (ids assigned in reverse-finish order, 0-based) and `num_comp` is the total
 /// number of SCCs.
 pub(crate) fn tarjan_scc(adj: &[Vec<u32>], n: usize) -> (Vec<usize>, usize) {
+    debug_assert_eq!(adj.len(), n, "tarjan_scc: adj.len() must equal n");
     const UNVISITED: u32 = u32::MAX;
 
     let mut index = vec![UNVISITED; n];
