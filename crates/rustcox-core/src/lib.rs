@@ -6,3 +6,4 @@
 
 // Modules land task by task; see the implementation plan.
 pub mod laurent;
+pub mod ring;
