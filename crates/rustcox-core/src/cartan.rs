@@ -18,6 +18,9 @@
 //! - Type I₂(m): integer Cartan for m∈{3,4,6}; golden (φ) for m=5; all other
 //!   m use cyclotomic integers [`CycInt`] (the `Cyc` variant) following PyCox's
 //!   `cartanmat` exactly (even/odd m differ — see [`cartan_i`]).
+//!
+// TODO(follow-up): split dihedral helpers (cartan_i_cyc, coxeter_from_cyc,
+// bezout_coeff1) into cartan_cyc.rs — file at 905 lines
 
 use crate::ring::{CycInt, GoldenInt, RootCoeff};
 use thiserror::Error;
@@ -565,12 +568,11 @@ fn golden_off_diag_order(c_st: &GoldenInt, c_ts: &GoldenInt) -> u32 {
 /// Coxeter order m. The order m equals the cyclotomic field order carried by any
 /// off-diagonal entry (`CycInt::order`); diagonal `2`s are sentinel constants.
 fn coxeter_from_cyc(mat: &[Vec<CycInt>]) -> Vec<Vec<u32>> {
+    let rows = mat.len();
+    let cols = mat.first().map(|r| r.len()).unwrap_or(0);
     assert_eq!(
-        mat.len(),
-        2,
-        "Cyc Cartan matrices are dihedral (2×2); got {}×{}",
-        mat.len(),
-        mat.len()
+        rows, 2,
+        "Cyc Cartan matrices are dihedral (2×2); got {rows}×{cols}"
     );
     // Recover m from whichever off-diagonal entry carries a real field order.
     let m = mat[0][1].order().max(mat[1][0].order());

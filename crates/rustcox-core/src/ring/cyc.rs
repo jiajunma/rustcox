@@ -151,6 +151,10 @@ impl CycInt {
     /// Port of PyCox `cyclpol(n, u)`: start from `x^n − 1`, then divide out
     /// Φ_d for every proper divisor d of n (smallest first via the recursion).
     /// All arithmetic is exact integer polynomial division.
+    ///
+    /// **Performance note:** `n` is expected to be small (≤ ~60); this function
+    /// performs no memoisation and is called only at construction time (once per
+    /// `CycInt` that holds a non-trivial field element).
     pub fn phi(n: u32) -> Vec<i64> {
         assert!(n >= 1, "Φ_n needs n ≥ 1");
         if n == 1 {
@@ -243,8 +247,11 @@ fn exact_div(num: &[i64], den: &[i64]) -> Vec<i64> {
     let dd = den.len() - 1; // degree of denominator
     let lead = *den.last().unwrap();
     if rem.len() <= dd {
-        // num has lower degree than den; quotient is 0 only if num is 0.
-        assert!(rem.is_empty(), "exact_div: non-zero remainder (degree)");
+        // numerator degree < denominator degree but numerator non-zero.
+        assert!(
+            rem.is_empty(),
+            "numerator degree < denominator degree but numerator non-zero"
+        );
         return Vec::new();
     }
     let mut quot = vec![0_i64; rem.len() - dd];
