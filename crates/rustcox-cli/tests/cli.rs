@@ -166,7 +166,8 @@ fn kl_weights_len_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: selftest --golden-dir golden — exit 0; PASS present; I7/I8 → SKIP
+// Test 5: selftest --golden-dir golden — exit 0; every file PASS, no SKIPs.
+// Task 18 enabled the previously-skipped I7/I8 cyclotomic dihedral goldens.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -193,11 +194,23 @@ fn selftest_passes() {
         !stdout.contains("FAIL"),
         "stdout should not contain 'FAIL': {stdout}"
     );
-    // I7 and I8 golden files should be skipped (CycInt not supported)
+    // With CycInt support there is nothing left to skip — every golden computes.
     assert!(
-        stdout.contains("SKIP"),
-        "stdout should contain 'SKIP' for I7/I8 goldens: {stdout}"
+        !stdout.contains("SKIP"),
+        "stdout should contain no 'SKIP' lines: {stdout}"
     );
+    // The cyclotomic dihedral goldens must be present and passing.
+    for needle in [
+        "PASS  basics_I7",
+        "PASS  basics_I8",
+        "PASS  kl_I7",
+        "PASS  kl_I8",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "selftest output missing '{needle}': {stdout}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

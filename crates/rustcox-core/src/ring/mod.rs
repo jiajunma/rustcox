@@ -1,8 +1,15 @@
 //! Ring coefficient types for root systems.
 //!
-//! Root coordinate vectors use either ℤ (`i64`) for crystallographic types, or
-//! ℤ[φ] (`GoldenInt`) for types H3, H4, I2(5), where φ = (1+√5)/2 is the
-//! golden ratio satisfying φ² = φ + 1.
+//! Root coordinate vectors use one of three coefficient rings:
+//!
+//! - ℤ (`i64`) for crystallographic types and dihedral I₂(m) with m ∈ {3,4,6};
+//! - ℤ[φ] ([`GoldenInt`]) for types H₃, H₄, I₂(5), where φ = (1+√5)/2 is the
+//!   golden ratio satisfying φ² = φ + 1;
+//! - ℤ[ζ]/(Φ_m(ζ)) ([`CycInt`]) for dihedral I₂(m) with m ∉ {3,4,5,6}, where
+//!   ζ = ζ_m = e^{2πi/m} and Φ_m is the m-th cyclotomic polynomial.
+
+mod cyc;
+pub use cyc::CycInt;
 
 /// The golden ratio φ = (1+√5)/2 ≈ 1.6180339887498948…
 const PHI: f64 = 1.618_033_988_749_895;

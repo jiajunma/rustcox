@@ -48,6 +48,7 @@ pub struct RootSystem {
 /// Dispatches on the variant of `cmat`:
 /// - `CartanMat::Int` → uses `i64` arithmetic, stores `roots_int`.
 /// - `CartanMat::Golden` → uses `GoldenInt` arithmetic, `roots_int` is `None`.
+/// - `CartanMat::Cyc` → uses `CycInt` arithmetic, `roots_int` is `None`.
 pub fn build(cmat: &CartanMat) -> RootSystem {
     match cmat {
         CartanMat::Int(mat) => {
@@ -60,15 +61,22 @@ pub fn build(cmat: &CartanMat) -> RootSystem {
                 permgens,
             }
         }
-        CartanMat::Golden(mat) => {
-            let (roots, permgens) = build_generic(mat);
-            let n_pos = roots.len() as u32 / 2;
-            RootSystem {
-                n_pos,
-                roots_int: None,
-                permgens,
-            }
-        }
+        // Golden (ℤ[φ]) and Cyc (ℤ[ζ]) both use exact non-integer arithmetic
+        // and store no integer root coordinates.
+        CartanMat::Golden(mat) => build_no_int_roots(mat),
+        CartanMat::Cyc(mat) => build_no_int_roots(mat),
+    }
+}
+
+/// Build a root system over a non-integer coefficient ring, discarding the
+/// (non-`i64`) root coordinates and keeping only `n_pos` + permgens.
+fn build_no_int_roots<R: RootCoeff>(mat: &[Vec<R>]) -> RootSystem {
+    let (roots, permgens) = build_generic(mat);
+    let n_pos = roots.len() as u32 / 2;
+    RootSystem {
+        n_pos,
+        roots_int: None,
+        permgens,
     }
 }
 
@@ -266,5 +274,62 @@ mod tests {
         let rs = build(&cm);
         assert_eq!(rs.n_pos, 5);
         assert!(rs.roots_int.is_none());
+    }
+
+    #[test]
+    fn i7_cyclotomic_root_system() {
+        let cm = cartan_mat(Series::I(7), 2).unwrap();
+        let rs = build(&cm);
+        assert_eq!(rs.n_pos, 7);
+        assert!(rs.roots_int.is_none());
+        // Each generator is an involution on the 14 roots.
+        for s in 0..2 {
+            let p = &rs.permgens[s].0;
+            assert_eq!(p.len(), 14);
+            for i in 0..14 {
+                assert_eq!(p[p[i] as usize] as usize, i, "permgens[{s}] not involution");
+            }
+        }
+    }
+
+    #[test]
+    fn i8_cyclotomic_root_system() {
+        let cm = cartan_mat(Series::I(8), 2).unwrap();
+        let rs = build(&cm);
+        assert_eq!(rs.n_pos, 8);
+        assert!(rs.roots_int.is_none());
+    }
+
+    #[test]
+    fn i12_cyclotomic_root_system_n_pos() {
+        // Even m with a longer cyclotomic entry exercises reduction in the BFS.
+        let cm = cartan_mat(Series::I(12), 2).unwrap();
+        let rs = build(&cm);
+        assert_eq!(rs.n_pos, 12);
+    }
+
+    /// Routing decision (m = 5): the production path keeps I₂(5) on `GoldenInt`.
+    /// This test documents *why* — building I₂(5) through the cyclotomic ring
+    /// (the odd-m rule gives `z1 = ζ_5^2 + ζ_5^3 = −φ`) yields **byte-identical
+    /// permgens**, so either ring is safe; we keep `GoldenInt` because it is the
+    /// exact representation already covered by the golden files.
+    #[test]
+    fn i5_golden_and_cyc_permgens_agree() {
+        use crate::cartan::CartanMat;
+        use crate::ring::CycInt;
+
+        let golden = cartan_mat(Series::I(5), 2).unwrap();
+        let rs_g = build(&golden);
+
+        // Cyclotomic I5 (odd-m rule, m=5): z1 = ζ^2 + ζ^3.
+        let two = CycInt::from_int(2);
+        let z1 = CycInt::new(5, vec![0, 0, 1, 1]);
+        let cyc = CartanMat::Cyc(vec![vec![two.clone(), z1.clone()], vec![z1, two]]);
+        let rs_c = build(&cyc);
+
+        assert_eq!(rs_g.n_pos, rs_c.n_pos, "I5 n_pos differs across rings");
+        let pg: Vec<&[u32]> = rs_g.permgens.iter().map(|p| &*p.0).collect();
+        let pc: Vec<&[u32]> = rs_c.permgens.iter().map(|p| &*p.0).collect();
+        assert_eq!(pg, pc, "I5 permgens differ between Golden and Cyc rings");
     }
 }

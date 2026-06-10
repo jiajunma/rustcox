@@ -36,9 +36,6 @@ pub fn run(golden_dir: &Path) -> anyhow::Result<bool> {
                 println!("FAIL  {fname}: {msg}");
                 all_pass = false;
             }
-            OneResult::Skip(reason) => {
-                println!("SKIP  {fname}: {reason}");
-            }
         }
     }
 
@@ -54,7 +51,6 @@ pub fn run(golden_dir: &Path) -> anyhow::Result<bool> {
 enum OneResult {
     Pass,
     Fail(String),
-    Skip(String),
 }
 
 fn run_one(path: &Path) -> OneResult {
@@ -71,11 +67,6 @@ fn run_kl_one(doc: &Value) -> OneResult {
         Some(v) => v,
         None => return OneResult::Fail("missing 'type' field".to_string()),
     };
-
-    // Check for CycInt (I with m not in {3,4,5,6})
-    if needs_cyc_int(type_val) {
-        return OneResult::Skip("needs CycInt".to_string());
-    }
 
     let group = match group_from_type_json(type_val) {
         Ok(g) => g,
@@ -123,11 +114,6 @@ fn run_basics_one(doc: &Value) -> OneResult {
         None => return OneResult::Fail("missing 'type' field".to_string()),
     };
 
-    // Basics files don't have I2(m) with exotic m, but guard anyway
-    if needs_cyc_int(type_val) {
-        return OneResult::Skip("needs CycInt".to_string());
-    }
-
     let group = match group_from_type_json(type_val) {
         Ok(g) => g,
         Err(e) => return OneResult::Fail(format!("group construction: {e}")),
@@ -141,25 +127,6 @@ fn run_basics_one(doc: &Value) -> OneResult {
         let diff = find_first_kl_diff(&computed, doc);
         OneResult::Fail(format!("mismatch: {diff}"))
     }
-}
-
-/// Returns `true` if the type JSON contains an I-series component with `m`
-/// not in `{3, 4, 5, 6}` (those require CyclotomicInteger support).
-fn needs_cyc_int(type_val: &Value) -> bool {
-    let arr = match type_val.as_array() {
-        Some(a) => a,
-        None => return false,
-    };
-    for comp in arr {
-        let series = comp.get("series").and_then(|v| v.as_str()).unwrap_or("");
-        if series == "I" {
-            let m = comp.get("m").and_then(|v| v.as_u64()).unwrap_or(0);
-            if !matches!(m, 3..=6) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// Collect all `kl_*.json`, `kl_*.json.gz`, `basics_*.json`, `basics_*.json.gz`
@@ -228,8 +195,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn unknown_kind_is_fail_not_skip() {
-        // A golden doc with an unrecognised "kind" must produce Fail, not Skip.
+    fn unknown_kind_is_fail() {
+        // A golden doc with an unrecognised "kind" must produce Fail.
         let doc = json!({"kind": "future_thing", "type": [{"series": "A", "rank": 2}]});
         match run_one_from_value(&doc) {
             OneResult::Fail(msg) => {
@@ -238,26 +205,26 @@ mod tests {
                     "Fail message should name the kind, got: {msg}"
                 );
             }
-            OneResult::Skip(_) => panic!("unknown kind should be Fail, not Skip"),
             OneResult::Pass => panic!("unknown kind should be Fail, not Pass"),
         }
     }
 
     #[test]
-    fn cyc_int_i2m_is_skip() {
-        // I2(7) needs CycInt and must produce Skip.
-        let doc = json!({"kind": "kl", "type": [{"series": "I", "m": 7}]});
+    fn cyc_int_i2m_now_computes_not_skipped() {
+        // With CycInt support (Task 18), I2(7) no longer skips: it must build
+        // the group and run, so a *constructed* golden doc with an empty/garbage
+        // body fails on the comparison rather than skipping. We assert it does
+        // NOT silently pass and is not skipped — selftest now has no Skip state.
+        let doc = json!({"kind": "kl", "type": [{"series": "I", "m": 7}], "weights": [1, 1]});
         match run_one_from_value(&doc) {
-            OneResult::Skip(reason) => {
+            // It computes and then mismatches this stub doc → Fail (not Skip).
+            OneResult::Fail(msg) => {
                 assert!(
-                    reason.contains("CycInt"),
-                    "Skip reason should mention CycInt, got: {reason}"
+                    msg.contains("mismatch") || msg.contains("missing"),
+                    "I2(7) should compute then mismatch the stub doc, got: {msg}"
                 );
             }
-            other => panic!(
-                "I2(7) should be Skip, got {:?}",
-                matches!(other, OneResult::Pass)
-            ),
+            OneResult::Pass => panic!("stub I2(7) doc should not pass"),
         }
     }
 }

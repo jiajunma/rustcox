@@ -12,7 +12,8 @@ use rustcox_core::enumerate::ElementTable;
 use rustcox_core::group::CoxeterGroup;
 use rustcox_core::roots;
 
-/// Names of all golden basics files that can be tested without CycInt (Task 18).
+/// Names of all golden basics files (now including the CycInt dihedral types
+/// I₂(7) and I₂(8), enabled by Task 18).
 const BASICS_NAMES: &[&str] = &[
     "basics_A1",
     "basics_A2",
@@ -31,6 +32,8 @@ const BASICS_NAMES: &[&str] = &[
     "basics_H3",
     "basics_H4",
     "basics_I5",
+    "basics_I7",
+    "basics_I8",
 ];
 
 #[test]
@@ -233,7 +236,6 @@ fn permgen_coxeter_relations() {
 /// `longest_word` key and group order ≤ 10 000.
 ///
 /// Types without `longest_word` in the golden file (E6, H4) are skipped.
-/// I7 and I8 require CycInt and are excluded here.
 #[test]
 fn longest_words() {
     // Subset of BASICS_NAMES that have a golden "longest_word" key AND |W| ≤ 10000.
@@ -253,6 +255,8 @@ fn longest_words() {
         "basics_G2",
         "basics_H3",
         "basics_I5",
+        "basics_I7",
+        "basics_I8",
     ];
 
     for name in NAMES {
@@ -342,7 +346,7 @@ fn type_string_from_golden(g: &serde_json::Value, name: &str) -> String {
 /// default (non-ignored) profile.  A5 and F4 are gated separately if needed.
 #[test]
 fn element_tables_length_histogram() {
-    // Basics names that have a length_histogram key (excludes E6, H4, I7, I8).
+    // Basics names that have a length_histogram key (excludes E6, H4).
     const NAMES_WITH_HIST: &[&str] = &[
         "basics_A1",
         "basics_A2",
@@ -353,6 +357,8 @@ fn element_tables_length_histogram() {
         "basics_G2",
         "basics_H3",
         "basics_I5",
+        "basics_I7",
+        "basics_I8",
         "basics_C3",
         "basics_D4",
     ];
@@ -472,7 +478,10 @@ fn a4_element_table_invariants() {
     }
 }
 
-// I7/I8 golden coverage arrives with CycInt (plan Task 18).
+// I7/I8 golden coverage is now active via CycInt (Task 18): they appear in
+// BASICS_NAMES and so flow through cartan_data, root_systems,
+// permgen_coxeter_relations, longest_words, the histogram test, and
+// basics_documents below.
 
 // ---------------------------------------------------------------------------
 // Task 14: basics_documents — full-document comparison

@@ -149,6 +149,18 @@ fn kl_i5() {
     check_kl_golden("kl_I5_w1");
 }
 
+// Cyclotomic dihedral types (Task 18: CycInt). Both drivers must match PyCox
+// byte-for-byte, exercising the full CycInt → root-system → KL pipeline.
+#[test]
+fn kl_i7() {
+    check_kl_golden("kl_I7_w1");
+}
+
+#[test]
+fn kl_i8_w1_2() {
+    check_kl_golden("kl_I8_w1_2");
+}
+
 // ---------------------------------------------------------------------------
 // Unequal-parameter golden suites (Task 10)
 // ---------------------------------------------------------------------------
