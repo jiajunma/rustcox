@@ -29,11 +29,15 @@ All times are Criterion **median** from the run recorded in `/tmp/bench.txt`.
 | t = 4   | 45.5 ms     | 1.46×          |
 | t = 8   | 44.7 ms     | 1.48×          |
 
-**Note on parallel scaling**: F4 has only 9 length layers (longest element has
-length 24, but many layers are thin), so the layer-barrier overhead limits
-speedup at this group size.  The parallel driver is primarily designed for
-rank-≥ 5 groups; F4 is the largest rank-4 group and already well within the
-1 s gate on a single thread.
+**Note on parallel scaling**: F4 has 25 length layers (longest element has
+length 24, so layers 0–24), with a maximum width of 94 elements and only 4 layers
+thinner than 8 elements.  The modest 1.46–1.48× speedup has three causes:
+(a) the parallel driver serialises across layer boundaries — 25 barriers for F4;
+(b) the deterministic intern phase inside each layer is sequential (Amdahl limit);
+(c) per-unit work is small at 66 ms total scale.  Speedups will improve for
+larger groups (rank ≥ 5) where layers are wider, rows longer, and the
+Amdahl fraction shrinks.  F4 is already well within the 1 s gate on a single
+thread, so no further parallelism tuning is needed here.
 
 ### Unequal-parameter path — `klpolynomials_seq` on B3 [2,1,1]
 
