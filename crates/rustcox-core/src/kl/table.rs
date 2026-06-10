@@ -2,6 +2,9 @@
 //!
 //! This module is purely storage + simple accessors.  No KL recursion lives
 //! here; that belongs to `kl/compute.rs` (Task 9).
+//!
+//! Direct field mutation of [`KlRow`] by the compute pass is intentional:
+//! the row is owned by the table and is only written by one writer at a time.
 
 use crate::{element::ElmIdx, enumerate::ElementTable, laurent::Laurent};
 
@@ -52,6 +55,12 @@ pub enum MuMode {
 /// `mu_present` holds a flat bool array of length `(w+1) * rank`.
 /// `mu_present[y * rank + s]` is `true` when the mu slot is non-zero.
 /// The actual value is derived from the KL polynomial at query time.
+///
+/// ## Direct field mutation
+///
+/// The compute pass writes directly into `pol`, `mu`, and `mu_present`
+/// after pushing a fresh row.  This is intentional: the row is owned
+/// exclusively by the table during the write phase.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KlRow {
     /// `pol[y]` = index into `KlTable::pols`, or `NOT_LEQ`.
@@ -82,7 +91,12 @@ pub struct KlTable {
     /// Polynomial pool.  `pols[0]` is always `Laurent::one()`.
     pub pols: Vec<Laurent>,
     /// Mu pools, one per generator.  Non-empty only in `Stored` mode.
-    /// In Stored mode, `mues[s][0]` is always `Laurent::zero()`.
+    ///
+    /// **Pool invariant (Stored mode):** index `0` is the canonical zero
+    /// polynomial.  The zero polynomial must **never** be interned at index ≥ 1;
+    /// Task 9 must dedup zero values to index `0`.  All other entries
+    /// (index ≥ 1) are guaranteed non-zero by the dedup invariant.
+    /// `mues[s][0]` is always `Laurent::zero()`.
     pub mues: Vec<Vec<Laurent>>,
     /// Whether mu values are stored explicitly or derived implicitly.
     pub mu_mode: MuMode,
@@ -138,6 +152,7 @@ impl KlTable {
     ///
     /// Requires `y <= w` (by canonical index); panics in debug mode otherwise.
     /// If `y == w` always returns `true`.
+    #[inline]
     pub fn bruhat_leq(&self, y: ElmIdx, w: ElmIdx) -> bool {
         debug_assert!(y <= w, "bruhat_leq: y={y} > w={w}");
         if y == w {
@@ -150,6 +165,7 @@ impl KlTable {
     /// Return the KL polynomial `P_{y,w}`, or `None` if `y ≰ w`.
     ///
     /// Requires `y <= w` (by canonical index).
+    #[inline]
     pub fn pol(&self, y: ElmIdx, w: ElmIdx) -> Option<&Laurent> {
         debug_assert!(y <= w, "pol: y={y} > w={w}");
         if y == w {
@@ -167,11 +183,15 @@ impl KlTable {
 
     /// Return the mu coefficient `μ^s_{y,w}`.
     ///
-    /// In `Implicit` mode: computed from the KL polynomial as the constant
-    /// term of `v^{1 + L(y) − L(w)} · P_{y,w}`.  If the slot is not present
+    /// In `Implicit` mode: computed from the KL polynomial as the coefficient
+    /// of `v^{L(w) − L(y) − 1}` in `P_{y,w}` (equivalently, the constant term
+    /// of `v^{1 + L(y) − L(w)} · P_{y,w}`).  If the slot is not present
     /// (flag false) or `y ≰ w`, returns zero.
     ///
     /// In `Stored` mode: pool lookup.  If `NO_MU` sentinel, returns zero.
+    ///
+    /// For the Stored-mode hot path prefer [`mu_ref`] to avoid cloning.
+    #[inline]
     pub fn mu(&self, s: usize, y: ElmIdx, w: ElmIdx) -> Laurent {
         debug_assert!(y <= w, "mu: y={y} > w={w}");
         let rank = self.rank();
@@ -186,18 +206,20 @@ impl KlTable {
                 let present = row
                     .mu_present
                     .as_ref()
-                    .map(|v| v[y as usize * rank + s])
-                    .unwrap_or(false);
+                    .expect("Implicit-mode row missing mu_present")[y as usize * rank + s];
                 if !present {
                     return Laurent::zero();
                 }
-                // Derive: P_{y,w} shifted by (1 + L(y) - L(w)), then zero_part
+                // Derive: coefficient of v^{L(w)-L(y)-1} in P_{y,w}.
+                // This equals zero_part(v^shift · P_{y,w}) with
+                // shift = 1 + L(y) - L(w), but h.coeff(-shift) avoids
+                // allocating a shifted copy.
                 let Some(h) = self.pol(y, w) else {
                     return Laurent::zero();
                 };
                 let shift =
                     1i32 + self.lweights[y as usize] as i32 - self.lweights[w as usize] as i32;
-                let c = h.shifted(shift).zero_part();
+                let c = h.coeff(-shift);
                 Laurent::monomial(c, 0)
             }
             MuMode::Stored => {
@@ -216,10 +238,35 @@ impl KlTable {
         }
     }
 
+    /// Return a reference to `μ^s_{y,w}` without cloning (Stored mode only).
+    ///
+    /// Returns `None` in Implicit mode or when no mu slot exists for `(y, s, w)`.
+    /// Task 9's stored-mode hot path should prefer this over [`mu`] to avoid
+    /// pool clones.
+    pub fn mu_ref(&self, s: usize, y: ElmIdx, w: ElmIdx) -> Option<&Laurent> {
+        debug_assert!(y <= w, "mu_ref: y={y} > w={w}");
+        if self.mu_mode != MuMode::Stored {
+            return None;
+        }
+        if y == w {
+            return None;
+        }
+        let rank = self.rank();
+        let row = &self.rows[w as usize];
+        let mu_vec = row.mu.as_ref().expect("Stored mode: mu vec missing");
+        let idx = mu_vec[y as usize * rank + s];
+        if idx == NO_MU {
+            None
+        } else {
+            Some(&self.mues[s][idx as usize])
+        }
+    }
+
     /// Return `true` iff `μ^s_{y,w} ≠ 0`.
     ///
-    /// In `Implicit` mode this is cheaper than `mu()` because it only computes
-    /// the scalar and compares to zero, without allocating a `Laurent`.
+    /// In `Implicit` mode this is cheaper than `mu()` because it reads a single
+    /// coefficient without allocating a shifted copy.
+    #[inline]
     pub fn mu_is_nonzero(&self, s: usize, y: ElmIdx, w: ElmIdx) -> bool {
         debug_assert!(y <= w, "mu_is_nonzero: y={y} > w={w}");
         if y == w {
@@ -233,8 +280,7 @@ impl KlTable {
                 let present = row
                     .mu_present
                     .as_ref()
-                    .map(|v| v[y as usize * rank + s])
-                    .unwrap_or(false);
+                    .expect("Implicit-mode row missing mu_present")[y as usize * rank + s];
                 if !present {
                     return false;
                 }
@@ -243,16 +289,23 @@ impl KlTable {
                 };
                 let shift =
                     1i32 + self.lweights[y as usize] as i32 - self.lweights[w as usize] as i32;
-                h.shifted(shift).zero_part() != 0
+                h.coeff(-shift) != 0
             }
             MuMode::Stored => {
                 let row = &self.rows[w as usize];
                 let mu_vec = row.mu.as_ref().expect("Stored mode: mu vec missing");
                 let idx = mu_vec[y as usize * rank + s];
-                if idx == NO_MU {
+                // Pool invariant: index 0 is the canonical zero; non-zero values
+                // are interned at index ≥ 1.  So nonzero iff idx is a valid
+                // non-zero slot.
+                if idx == NO_MU || idx == 0 {
                     return false;
                 }
-                !self.mues[s][idx as usize].is_zero()
+                debug_assert!(
+                    !self.mues[s][idx as usize].is_zero(),
+                    "mu pool invariant violated: zero interned at index {idx} (must be 0)"
+                );
+                true
             }
         }
     }

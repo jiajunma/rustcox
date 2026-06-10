@@ -203,21 +203,31 @@ mod tests {
 
     /// Conjugacy transitivity: A3 generators 0-1 (m=3, odd), 1-2 (m=3, odd)
     /// → all three are in the same conjugacy class transitively.
-    /// weights [1,1,2]: 1-2 edge odd → 1 and 2 conjugate → weights[1]=1 ≠
-    /// weights[2]=2 → error.
+    /// weights [2,1,1]: 0-1 edge odd → 0 and 1 conjugate → weights[0]=2 ≠
+    /// weights[1]=1, but also 0 is in the same class as 2 via transitivity
+    /// through 1.  The error must name a conjugate pair.
     #[test]
     fn klopts_validate_a3_transitivity() {
         let group = CoxeterGroup::from_type("A3").unwrap();
 
-        // [1,1,2]: 1 and 2 are directly connected by odd m=3 → different → Err
+        // [2,1,1]: generators 0 and 1 are directly connected by odd m=3.
+        // Transitivity via generator 1 also puts 0 and 2 in the same class.
+        // The validator must return Err(ConjugateWeights(s, t)) for some pair.
         let bad = KlOpts {
-            weights: vec![1, 1, 2],
+            weights: vec![2, 1, 1],
             threads: None,
             layer_chunk: None,
         };
+        let result = bad.validate(&group);
         assert!(
-            matches!(bad.validate(&group), Err(KlError::ConjugateWeights(..))),
-            "A3 [1,1,2] transitivity should fail"
+            matches!(result, Err(KlError::ConjugateWeights(..))),
+            "A3 [2,1,1] transitivity should fail with ConjugateWeights, got {result:?}"
+        );
+        // Verify the error message mentions a conjugate pair.
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("conjugate"),
+            "error message should mention conjugate pair, got: {err_msg}"
         );
     }
 
