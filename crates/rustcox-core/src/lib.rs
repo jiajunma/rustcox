@@ -7,6 +7,7 @@
 // Modules land task by task; see the implementation plan.
 pub mod cartan;
 pub mod element;
+pub mod enumerate;
 pub mod group;
 pub mod laurent;
 pub mod ring;

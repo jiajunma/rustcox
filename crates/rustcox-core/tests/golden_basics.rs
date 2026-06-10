@@ -8,6 +8,7 @@
 mod common;
 
 use rustcox_core::cartan::{cartan_mat, coxeter_mat_from_cartan, degrees_of, order_from_degrees};
+use rustcox_core::enumerate::ElementTable;
 use rustcox_core::group::CoxeterGroup;
 use rustcox_core::roots;
 
@@ -324,6 +325,150 @@ fn type_string_from_golden(g: &serde_json::Value, name: &str) -> String {
                 .unwrap_or_else(|| panic!("{name}: missing 'rank'"));
             format!("{series}{rank}")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 6: Element enumeration golden tests
+// ---------------------------------------------------------------------------
+
+/// Verify per-length element counts (length_histogram) against golden data.
+///
+/// For every basics golden file that contains a `length_histogram` key,
+/// builds the full `ElementTable` and asserts that the number of elements at
+/// each length matches the golden histogram.
+///
+/// Fast groups (A1..A5, B2..B4, C3, D4, D5, F4, G2, H3, I5) run in the
+/// default (non-ignored) profile.  A5 and F4 are gated separately if needed.
+#[test]
+fn element_tables_length_histogram() {
+    // Basics names that have a length_histogram key (excludes E6, H4, I7, I8).
+    const NAMES_WITH_HIST: &[&str] = &[
+        "basics_A1",
+        "basics_A2",
+        "basics_A3",
+        "basics_A4",
+        "basics_B2",
+        "basics_B3",
+        "basics_G2",
+        "basics_H3",
+        "basics_I5",
+        "basics_C3",
+        "basics_D4",
+    ];
+    // Slow groups (A5, B4, D5, F4) run only in the release + include-ignored profile.
+    const NAMES_SLOW: &[&str] = &["basics_A5", "basics_B4", "basics_D5", "basics_F4"];
+
+    let all_names: Vec<&str> = NAMES_WITH_HIST.iter().chain(NAMES_SLOW).copied().collect();
+
+    for name in &all_names {
+        let g = common::golden(name);
+        // Skip if no length_histogram in this golden file.
+        let golden_hist_val = match g.get("length_histogram") {
+            Some(v) => v.clone(),
+            None => continue,
+        };
+        let golden_hist: Vec<usize> = serde_json::from_value(golden_hist_val)
+            .unwrap_or_else(|e| panic!("{name}: failed to parse length_histogram: {e}"));
+
+        let type_str = type_string_from_golden(&g, name);
+        let group = CoxeterGroup::from_type(&type_str).unwrap_or_else(|e| {
+            panic!("{name}: CoxeterGroup::from_type({type_str:?}) failed: {e}")
+        });
+        let table = ElementTable::build(&group);
+
+        // Build actual histogram
+        let max_len = *table.lengths.iter().max().unwrap_or(&0) as usize;
+        let mut hist = vec![0usize; max_len + 1];
+        for &l in &table.lengths {
+            hist[l as usize] += 1;
+        }
+
+        assert_eq!(
+            hist, golden_hist,
+            "{name}: length_histogram mismatch\n  got:      {hist:?}\n  expected: {golden_hist:?}"
+        );
+    }
+}
+
+/// Verify exact canonical element list against kl golden files.
+///
+/// The `kl_A3_w1.json` and `kl_B3_w1.json` golden files contain an `"elms"`
+/// key with the canonical element list.  Assert our table matches exactly.
+#[test]
+fn element_tables_canonical_order() {
+    for kl_name in &["kl_A3_w1", "kl_B3_w1"] {
+        let g = common::golden(kl_name);
+
+        // Parse the "type" key to build the group.
+        let arr = g["type"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{kl_name}: 'type' is not an array"));
+        assert_eq!(arr.len(), 1, "{kl_name}: expected single component");
+        let item = &arr[0];
+        let series_str = item["series"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{kl_name}: missing series"));
+        let rank_val = item["rank"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{kl_name}: missing rank")) as usize;
+        let type_str = format!("{series_str}{rank_val}");
+
+        let group = CoxeterGroup::from_type(&type_str)
+            .unwrap_or_else(|e| panic!("{kl_name}: from_type({type_str:?}) failed: {e}"));
+        let table = ElementTable::build(&group);
+
+        let golden_elms: Vec<Vec<u8>> = serde_json::from_value(g["elms"].clone())
+            .unwrap_or_else(|e| panic!("{kl_name}: failed to parse 'elms': {e}"));
+
+        assert_eq!(
+            table.elms, golden_elms,
+            "{kl_name}: canonical element list mismatch"
+        );
+    }
+}
+
+/// Verify structural invariants on A4:
+/// - `lft[w][s] < w  ⟺  s ∈ left_descents(w)` for all (w, s)
+/// - `inva[inva[w]] == w` for all w
+/// - `lengths[aw0[w]] == N − lengths[w]` for all w
+#[test]
+fn a4_element_table_invariants() {
+    let group = CoxeterGroup::from_type("A4").unwrap();
+    let table = ElementTable::build(&group);
+    let n = group.n_pos;
+    let size = table.len();
+
+    // lft invariant
+    for i in 0..size {
+        let perm = group.word_to_perm(&table.elms[i]);
+        let left_desc = group.left_descents(&perm);
+        for s in 0..group.rank {
+            let lft_idx = table.lft[i][s];
+            let is_left_desc = left_desc.contains(&(s as u8));
+            assert_eq!(
+                lft_idx < i as u32,
+                is_left_desc,
+                "A4 lft invariant violated at i={i}, s={s}: lft={lft_idx}, is_left_desc={is_left_desc}"
+            );
+        }
+    }
+
+    // inva∘inva == id
+    for i in 0..size {
+        assert_eq!(
+            table.inva[table.inva[i] as usize] as usize, i,
+            "A4 inva∘inva != id at i={i}"
+        );
+    }
+
+    // aw0 length mirror
+    for i in 0..size {
+        assert_eq!(
+            table.lengths[table.aw0[i] as usize],
+            n - table.lengths[i],
+            "A4 aw0 length mirror violated at i={i}"
+        );
     }
 }
 
