@@ -8,6 +8,7 @@
 mod common;
 
 use rustcox_core::cartan::{cartan_mat, coxeter_mat_from_cartan, degrees_of, order_from_degrees};
+use rustcox_core::group::CoxeterGroup;
 use rustcox_core::roots;
 
 /// Names of all golden basics files that can be tested without CycInt (Task 18).
@@ -187,7 +188,9 @@ fn permgen_coxeter_relations() {
         }
 
         // 2. Coxeter-relation order check
+        #[allow(clippy::needless_range_loop)]
         for s in 0..rank {
+            #[allow(clippy::needless_range_loop)]
             for t in (s + 1)..rank {
                 let m = coxmat[s][t] as usize;
                 // Compose: p[i] = permgens[t][permgens[s][i]]
@@ -220,6 +223,106 @@ fn permgen_coxeter_relations() {
                      expected coxmat[{s}][{t}]={m}"
                 );
             }
+        }
+    }
+}
+
+/// Verify `longest_perm` + `perm_to_word` against the golden `longest_word`
+/// and `N` (= `perm_length` of the longest element) for every type with a
+/// `longest_word` key and group order ≤ 10 000.
+///
+/// Types without `longest_word` in the golden file (E6, H4) are skipped.
+/// I7 and I8 require CycInt and are excluded here.
+#[test]
+fn longest_words() {
+    // Subset of BASICS_NAMES that have a golden "longest_word" key AND |W| ≤ 10000.
+    const NAMES: &[&str] = &[
+        "basics_A1",
+        "basics_A2",
+        "basics_A3",
+        "basics_A4",
+        "basics_A5",
+        "basics_B2",
+        "basics_B3",
+        "basics_B4",
+        "basics_C3",
+        "basics_D4",
+        "basics_D5",
+        "basics_F4",
+        "basics_G2",
+        "basics_H3",
+        "basics_I5",
+    ];
+
+    for name in NAMES {
+        let g = common::golden(name);
+
+        // Skip if no longest_word in golden (should not happen for this list).
+        let golden_lw = match g.get("longest_word") {
+            Some(v) => v.clone(),
+            None => {
+                eprintln!("{name}: no longest_word in golden — skipping");
+                continue;
+            }
+        };
+        let golden_word: Vec<u8> = serde_json::from_value(golden_lw)
+            .unwrap_or_else(|e| panic!("{name}: failed to parse golden longest_word: {e}"));
+
+        let golden_n = g["N"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name}: golden N is not a u64"))
+            as u32;
+
+        // Parse type string from golden, build group.
+        // We derive a type string from the golden "type" field.
+        let type_str = type_string_from_golden(&g, name);
+        let group = CoxeterGroup::from_type(&type_str).unwrap_or_else(|e| {
+            panic!("{name}: CoxeterGroup::from_type({type_str:?}) failed: {e}")
+        });
+
+        let w0 = group.longest_perm();
+
+        // Check perm_length(w0) == N.
+        let l = group.perm_length(w0);
+        assert_eq!(
+            l, golden_n,
+            "{name}: perm_length(longest) = {l}, expected {golden_n}"
+        );
+
+        // Check perm_to_word(w0) == golden longest_word.
+        let word = group.perm_to_word(w0);
+        assert_eq!(
+            word, golden_word,
+            "{name}: perm_to_word(longest) mismatch\n  got:      {word:?}\n  expected: {golden_word:?}"
+        );
+    }
+}
+
+/// Build a type string like `"B2"` or `"A2"` from a golden file.
+///
+/// Only handles single-component types (all basics golden files are
+/// single-component).
+fn type_string_from_golden(g: &serde_json::Value, name: &str) -> String {
+    let arr = g["type"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{name}: golden 'type' is not an array"));
+    assert_eq!(arr.len(), 1, "{name}: expected single component");
+    let item = &arr[0];
+    let series = item["series"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{name}: missing 'series'"));
+    match series {
+        "I" => {
+            let m = item["m"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{name}: I-type missing 'm'"));
+            format!("I{m}")
+        }
+        _ => {
+            let rank = item["rank"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{name}: missing 'rank'"));
+            format!("{series}{rank}")
         }
     }
 }

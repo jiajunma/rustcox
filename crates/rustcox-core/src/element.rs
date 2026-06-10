@@ -22,6 +22,55 @@ pub type Word = Vec<Gen>;
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Perm(pub Box<[RootIdx]>);
 
+impl Perm {
+    /// Return the identity permutation of length `n2` (= 2N).
+    ///
+    /// Composition note: `identity.then(p) == p` and `p.then(identity) == p`.
+    #[inline]
+    pub fn identity(n2: usize) -> Perm {
+        Perm((0..n2 as u32).collect::<Vec<_>>().into_boxed_slice())
+    }
+
+    /// Compose `self` followed by `q`: result[i] = q[self[i]].
+    ///
+    /// This is PyCox's `permmult(self, q)`:
+    /// `then(p, q)[i] = q[p[i]]` — apply `self` first, then `q`.
+    #[inline]
+    pub fn then(&self, q: &Perm) -> Perm {
+        let data: Vec<RootIdx> = self.0.iter().map(|&i| q.0[i as usize]).collect();
+        Perm(data.into_boxed_slice())
+    }
+
+    /// Compose `q` followed by `self`: result[i] = self[q[i]].
+    ///
+    /// Equivalent to `q.then(self)`.  Used internally when left-multiplying
+    /// by a generator: `then(P_s, p)[i] = p[P_s[i]]`.
+    #[inline]
+    pub fn then_rev(&self, p: &Perm) -> Perm {
+        // result[i] = p[self[i]]  — i.e. "apply self first, then p"
+        // This is then(self, p).
+        self.then(p)
+    }
+
+    /// Return the inverse permutation: inv[p[i]] = i.
+    ///
+    /// Replicates PyCox `perminverse`.
+    pub fn inverse(&self) -> Perm {
+        let n = self.0.len();
+        let mut inv = vec![0u32; n];
+        for (i, &pi) in self.0.iter().enumerate() {
+            inv[pi as usize] = i as u32;
+        }
+        Perm(inv.into_boxed_slice())
+    }
+
+    /// Extract the first `rank` entries as a `CoxElm`.
+    #[inline]
+    pub fn coxelm(&self, rank: usize) -> CoxElm {
+        CoxElm(self.0[..rank].to_vec().into_boxed_slice())
+    }
+}
+
 /// A Coxeter group element, stored as the first `rank` entries of the
 /// corresponding `Perm`.
 ///
