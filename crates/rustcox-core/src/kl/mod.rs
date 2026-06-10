@@ -8,6 +8,7 @@ pub mod cells;
 pub mod compute;
 pub(crate) mod compute_uneq;
 pub mod parallel;
+pub(crate) mod scc;
 pub mod table;
 pub use cells::CellData;
 pub use compute::klpolynomials_seq;

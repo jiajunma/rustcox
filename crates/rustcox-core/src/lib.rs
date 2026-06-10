@@ -15,3 +15,4 @@ pub mod kl;
 pub mod laurent;
 pub mod ring;
 pub mod roots;
+pub mod wgraph;
