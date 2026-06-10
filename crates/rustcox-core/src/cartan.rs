@@ -82,6 +82,10 @@ pub enum Error {
     #[error("I2({0}) requires CycInt support (Task 18)")]
     NeedsCyc(u32),
 
+    /// The dihedral parameter m is below the minimum of 3.
+    #[error("I2(m) requires m ≥ 3, got {0}")]
+    InvalidDihedralParam(u32),
+
     /// A parse error while reading a type string.
     #[error("failed to parse type string '{0}': {1}")]
     ParseError(String, String),
@@ -176,15 +180,11 @@ fn cartan_c(rank: usize) -> Result<CartanMat, Error> {
 }
 
 fn cartan_d(rank: usize) -> Result<CartanMat, Error> {
-    // D_n, n ≥ 3. (PyCox allows D_2 = A_1 × A_1 and D_3 = A_3.)
-    // Nodes 0,1 are fork tips; node 2 is the fork centre.
+    // D_n, n ≥ 3. Nodes 0,1 are fork tips; node 2 is the fork centre.
     // Fork structure: 0—2, 1—2, 2—3—…—n−1 chain.
+    // The rank < 3 guard below already rejects rank 2 and below.
     if rank < 3 {
         return Err(rank_err("D", rank));
-    }
-    if rank == 2 {
-        // D_2 = A_1 × A_1 (PyCox special case, but we require n≥3)
-        return Ok(CartanMat::Int(vec![vec![2, 0], vec![0, 2]]));
     }
     // Start from A_n, then rewire the first two rows/cols
     let mut a = cartan_mat_a_int(rank);
@@ -291,10 +291,7 @@ fn cartan_i(m: u32, rank: usize) -> Result<CartanMat, Error> {
         });
     }
     if m < 3 {
-        return Err(Error::RankOutOfRange {
-            series: format!("I{m}"),
-            rank,
-        });
+        return Err(Error::InvalidDihedralParam(m));
     }
     match m {
         3 => Ok(CartanMat::Int(vec![vec![2, -1], vec![-1, 2]])),
@@ -336,7 +333,8 @@ pub fn degrees_of(series: Series, rank: usize) -> Result<Vec<u32>, Error> {
                 return Err(rank_err(
                     match series {
                         Series::B => "B",
-                        _ => "C",
+                        Series::C => "C",
+                        _ => unreachable!("matched B|C arm"),
                     },
                     rank,
                 ));
@@ -384,10 +382,7 @@ pub fn degrees_of(series: Series, rank: usize) -> Result<Vec<u32>, Error> {
                 });
             }
             if m < 3 {
-                return Err(Error::RankOutOfRange {
-                    series: format!("I{m}"),
-                    rank,
-                });
+                return Err(Error::InvalidDihedralParam(m));
             }
             // Degrees [2, m] for all I_2(m); NeedsCyc is only for cartan_mat.
             Ok(vec![2, m])
@@ -411,6 +406,14 @@ pub fn degrees_of(series: Series, rank: usize) -> Result<Vec<u32>, Error> {
 ///   - golden: c·c = 1 − c → 5  (H-type and I₂(5) edge)
 ///
 /// This matches PyCox's `coxetermat` computation in the `coxeter` class.
+///
+/// # Panics
+///
+/// Panics if the matrix was not produced by [`cartan_mat`].  Specifically:
+/// - Integer matrices: panics if any off-diagonal product cₛₜ·cₜₛ is outside
+///   {0, 1, 2, 3}.
+/// - Golden matrices: panics if a golden off-diagonal pair does not satisfy the
+///   golden identity (cₛₜ·cₜₛ == 1 − cₛₜ) and is not a plain integer pair.
 pub fn coxeter_mat_from_cartan(c: &CartanMat) -> Vec<Vec<u32>> {
     match c {
         CartanMat::Int(mat) => coxeter_from_int(mat),
@@ -472,7 +475,7 @@ fn coxeter_from_golden(mat: &[Vec<GoldenInt>]) -> Vec<Vec<u32>> {
 /// All other golden entries on non-special edges are plain integers (0 or −1).
 fn golden_off_diag_order(c_st: &GoldenInt, c_ts: &GoldenInt) -> u32 {
     let zero = GoldenInt::new(0, 0);
-    if c_st == &zero {
+    if c_st == &zero || c_ts == &zero {
         return 2;
     }
     // Check if both are integer (b == 0); if so use integer logic.
@@ -511,6 +514,9 @@ pub fn order_from_degrees(degrees: &[u32]) -> u128 {
 /// - Dihedral I-types: `"I7"` means I₂(7) with rank 2; the number after `I`
 ///   is the dihedral parameter m, not the rank.
 /// - Product types: separated by `x` (lowercase, e.g. `"A2xA1"`).
+///
+/// Note: rank ranges (e.g. B requires rank ≥ 2, E requires rank ∈ {6,7,8}) are
+/// NOT validated here; they are validated by [`cartan_mat`] and [`degrees_of`].
 pub fn parse_type(s: &str) -> Result<Vec<(Series, usize)>, Error> {
     s.split('x').map(|part| parse_single(part, s)).collect()
 }
@@ -594,6 +600,30 @@ mod tests {
     #[test]
     fn parse_unknown_series() {
         assert!(parse_type("Z9").is_err());
+    }
+
+    #[test]
+    fn parse_empty_string_is_err() {
+        assert!(parse_type("").is_err());
+    }
+
+    #[test]
+    fn parse_letter_only_is_err() {
+        // "A" has no numeric suffix — should fail
+        assert!(parse_type("A").is_err());
+    }
+
+    #[test]
+    fn parse_a0_is_ok() {
+        // parse_type does NOT validate rank ranges; "A0" parses successfully.
+        // The caller (cartan_mat / degrees_of) is responsible for rejecting rank 0.
+        assert_eq!(parse_type("A0").unwrap(), vec![(Series::A, 0)]);
+    }
+
+    #[test]
+    fn parse_a2x_is_err() {
+        // Trailing "x" produces an empty component which should be rejected.
+        assert!(parse_type("A2x").is_err());
     }
 
     // -- B2 concrete matrix (from PyCox) ------------------------------------

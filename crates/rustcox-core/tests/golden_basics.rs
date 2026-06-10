@@ -97,12 +97,17 @@ fn cartan_data_i7_i8() {
         let cartan = cartan_mat(series, rank)
             .unwrap_or_else(|e| panic!("{name}: cartan_mat({series:?}, {rank}) failed: {e}"));
         let cox = coxeter_mat_from_cartan(&cartan);
-        let golden_cox: Vec<Vec<u32>> = serde_json::from_value(g["coxetermat"].clone()).unwrap();
+        let golden_cox: Vec<Vec<u32>> = serde_json::from_value(g["coxetermat"].clone())
+            .unwrap_or_else(|e| panic!("{name}: failed to parse golden coxetermat: {e}"));
         assert_eq!(cox, golden_cox, "{name}: coxeter matrix mismatch");
-        let mut degrees = degrees_of(series, rank).unwrap();
+        let mut degrees = degrees_of(series, rank)
+            .unwrap_or_else(|e| panic!("{name}: degrees_of({series:?}, {rank}) failed: {e}"));
         degrees.sort_unstable();
         let order = order_from_degrees(&degrees);
-        let golden_order = g["order"].as_u64().unwrap() as u128;
+        let golden_order = g["order"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name}: golden \"order\" is not a u64"))
+            as u128;
         assert_eq!(order, golden_order, "{name}: order mismatch");
     }
 }
