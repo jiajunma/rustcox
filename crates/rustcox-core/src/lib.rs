@@ -5,5 +5,6 @@
 //! Implementation plan: `docs/superpowers/plans/2026-06-10-rustcox-implementation.md`.
 
 // Modules land task by task; see the implementation plan.
+pub mod cartan;
 pub mod laurent;
 pub mod ring;
