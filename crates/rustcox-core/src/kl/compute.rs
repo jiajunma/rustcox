@@ -105,7 +105,7 @@ pub(crate) struct KlCtx<'a> {
 impl KlCtx<'_> {
     /// Pool lookup for a completed entry `mat[w][y]`.  `None` when `y ≰ w`.
     #[inline]
-    fn pol_at(&self, w: ElmIdx, y: ElmIdx) -> Option<&Laurent> {
+    pub(crate) fn pol_at(&self, w: ElmIdx, y: ElmIdx) -> Option<&Laurent> {
         if y == w {
             return Some(&self.pols[0]);
         }
@@ -119,7 +119,7 @@ impl KlCtx<'_> {
 
     /// Whether `y ≤ w` in Bruhat order, reading the completed flag matrix.
     #[inline]
-    fn leq(&self, y: ElmIdx, w: ElmIdx) -> bool {
+    pub(crate) fn leq(&self, y: ElmIdx, w: ElmIdx) -> bool {
         if y == w {
             return true;
         }
@@ -136,25 +136,6 @@ impl KlCtx<'_> {
         };
         let shift = 1i32 + self.lweights[z as usize] as i32 - self.lweights[w as usize] as i32;
         h.coeff(-shift)
-    }
-
-    /// `μ^s_{z,w}` as a stored Laurent value (unequal-parameter path), reading
-    /// a completed row `w`.  `None` when the slot is absent (`NO_MU`); the
-    /// returned reference may be the zero polynomial.
-    #[inline]
-    fn mu_stored(&self, s: usize, z: ElmIdx, w: ElmIdx) -> Option<&Laurent> {
-        if z == w {
-            return None;
-        }
-        let row = &self.rows[w as usize];
-        let mu_vec = row.mu.as_ref()?;
-        let rank = self.elms.rank;
-        let idx = mu_vec[z as usize * rank + s];
-        if idx == NO_MU {
-            None
-        } else {
-            Some(&self.mues[s][idx as usize])
-        }
     }
 }
 
@@ -340,250 +321,14 @@ fn compute_h(w: ElmIdx, y: ElmIdx, first_desc: usize, ctx: &KlCtx<'_>, cur: &[Po
     h
 }
 
-// ---------------------------------------------------------------------------
-// KL polynomial (Phase B), unequal parameters
-// ---------------------------------------------------------------------------
-
-/// Compute `P̃_{y,w}` for a comparable pair `(w, y)`, **unequal parameters**.
-///
-/// Faithful to PyCox ≈10286–10337 *including* every `poids[s] == 0` branch,
-/// the recursion-generator swap to a left descent of minimal weight, the
-/// `v^{2·poids[s]}` term, and the stored-mu z-loop.  Same-row shortcut reads
-/// come from `cur`; all other reads go through `ctx` (completed rows / pools).
-fn compute_h_uneq(
-    w: ElmIdx,
-    y: ElmIdx,
-    first_desc: usize,
-    ctx: &KlCtx<'_>,
-    cur: &[PolSlot],
-) -> Laurent {
-    let elms = ctx.elms;
-    let rank = elms.rank;
-
-    // 1. Diagonal.
-    if y == w {
-        return Laurent::one();
-    }
-
-    let iw = elms.inva[w as usize];
-    let iy = elms.inva[y as usize];
-
-    // 2. Inverse symmetry: h = P̃_{inva[y], inva[w]}.
-    if iw < w || (iw == w && iy > y) {
-        if iw == w {
-            return same_row_value(cur, iy);
-        }
-        return ctx
-            .pol_at(iw, iy)
-            .cloned()
-            .expect("inverse-symmetry entry must be comparable");
-    }
-
-    // 3. Case I.  PyCox ≈10293–10302.
-    if let Some(s) = find_desc_asc(elms, y, w, rank) {
-        let sw = elms.lft(w, s);
-        let sy = elms.lft(y, s);
-        if ctx.weights[s] == 0 {
-            // poids[s] == 0: h = P̃_{sy,sw} (shorter row) if comparable, else 0.
-            if sy <= sw && ctx.leq(sy, sw) {
-                return ctx
-                    .pol_at(sw, sy)
-                    .cloned()
-                    .expect("Case I weight-0 base must be comparable");
-            }
-            return Laurent::zero();
-        }
-        // poids[s] > 0: h = P̃_{sy,w} (same row, sy > y).
-        return same_row_value(cur, sy);
-    }
-
-    // 4. Case II: search on the inverses.  PyCox ≈10304–10317.
-    if let Some(s) = find_desc_asc(elms, iy, iw, rank) {
-        let sw = elms.lft(iw, s); // inverse index
-        let sy = elms.lft(iy, s); // inverse index, > iy
-        if ctx.weights[s] == 0 {
-            if sy <= sw && ctx.leq(sy, sw) {
-                return ctx
-                    .pol_at(sw, sy)
-                    .cloned()
-                    .expect("Case II weight-0 base must be comparable");
-            }
-            return Laurent::zero();
-        }
-        let idx = elms.inva[sy as usize]; // length l(y)+1 ⇒ > y, same row
-        return same_row_value(cur, idx);
-    }
-
-    // 5. Full recursion.  PyCox ≈10318–10337.
-    //    s = first left descent of w; then (uneq) replace by any left descent
-    //    of minimal weight: the first t (in scan order) with poids[t] minimal.
-    let mut s = first_desc;
-    for t in 0..rank {
-        if elms.lft(w, t) < w && ctx.weights[t] < ctx.weights[s] {
-            s = t;
-        }
-    }
-    let sw = elms.lft(w, s);
-    let sy = elms.lft(y, s);
-
-    // h = P̃_{sy,sw}  (shorter row, comparable in this branch).
-    let mut h = ctx
-        .pol_at(sw, sy)
-        .cloned()
-        .expect("recursion base P̃_{sy,sw} must be comparable");
-
-    if ctx.weights[s] == 0 {
-        // poids[s] == 0: no v-term and no z-sum — just the base.
-        return h;
-    }
-
-    // + v^{2·poids[s]} · P̃_{y,sw}  if y ≤ sw and y ≤_B sw.
-    if y <= sw && ctx.leq(y, sw) {
-        if let Some(p) = ctx.pol_at(sw, y) {
-            let shift = 2 * ctx.weights[s] as i32;
-            h += &p.shifted(shift);
-        }
-    }
-
-    // − Σ_{z = sw−1 down to y}  μ^s_{z,sw} · v^{L(w)−L(z)} · P̃_{y,z}
-    //   over z with lft(z,s) < z and y ≤_B z and z ≤_B sw, reading the stored
-    //   mu pool of the completed row sw.
-    let lw_w = ctx.lweights[w as usize] as i32;
-    for z in (y..sw).rev() {
-        if elms.lft(z, s) >= z {
-            continue;
-        }
-        if !ctx.leq(y, z) || !ctx.leq(z, sw) {
-            continue;
-        }
-        let Some(m) = ctx.mu_stored(s, z, sw) else {
-            continue;
-        };
-        if m.is_zero() {
-            continue;
-        }
-        let Some(pyz) = ctx.pol_at(z, y) else {
-            continue;
-        };
-        let shift = lw_w - ctx.lweights[z as usize] as i32;
-        // h -= m · v^shift · P̃_{y,z}  (general Laurent mu ⇒ full product).
-        let term = &m.shifted(shift) * pyz;
-        h -= &term;
-    }
-
-    h
-}
-
 /// Read a same-row entry `mat[w][idx]` from this row's computed slots.
 #[inline]
-fn same_row_value(cur: &[PolSlot], idx: ElmIdx) -> Laurent {
+pub(crate) fn same_row_value(cur: &[PolSlot], idx: ElmIdx) -> Laurent {
     match &cur[idx as usize] {
         PolSlot::Value(p) => p.clone(),
         PolSlot::Incomparable => {
             unreachable!("same-row read of an incomparable entry at index {idx}")
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// mu value (Phase C), unequal parameters
-// ---------------------------------------------------------------------------
-
-/// Compute the explicit Laurent mu value `μ^s_{y,w}` for a present slot,
-/// **unequal parameters**.  Faithful to PyCox ≈10349–10365.
-///
-/// - `h` is `P̃_{y,w}` (this row, already computed).
-/// - `row_view` is this row's flat mu buffer, indexed as `row_view[z*rank+s]`.
-///   The `poids[s] ≥ 2` z-loop reads `pos_part` of `μ^s_{z,w}` from it for
-///   `z > y` only — those columns are already filled by the descending-`y`
-///   loop, and they live at flat indices *above* the current column's
-///   `y*rank` block, so the whole buffer is passed (the current and lower
-///   columns are never read here, since `z > y` strictly).
-/// - All other reads go through `ctx` (completed rows / pools); the
-///   `aw0`-symmetry branch reads `mues[s]` of the completed row `aw0[y]`.
-fn compute_mu_uneq(
-    w: ElmIdx,
-    y: ElmIdx,
-    s: usize,
-    h: &Laurent,
-    ctx: &KlCtx<'_>,
-    row_view: &[Option<Laurent>],
-    rank: usize,
-) -> Laurent {
-    let elms = ctx.elms;
-    let lw = &elms.lengths;
-    let lw_y = ctx.lweights[y as usize] as i32;
-    let lw_w = ctx.lweights[w as usize] as i32;
-    let poids = ctx.weights[s];
-
-    if lw[y as usize] + lw[w as usize] > ctx.n_pos {
-        // aw0 symmetry: m = ±μ^s_{aw0[y], aw0[w]}, sign MINUS iff
-        // (l(w) − l(y)) even.  Row aw0[y] is strictly shorter, slot present.
-        let ay = elms.aw0[y as usize];
-        let aw = elms.aw0[w as usize];
-        debug_assert!(
-            ctx.mu_stored(s, aw, ay).is_some(),
-            "aw0-symmetry mu slot (aw0[y]={ay}, aw0[w]={aw}, s={s}) must be present"
-        );
-        let base = ctx
-            .mu_stored(s, aw, ay)
-            .cloned()
-            .unwrap_or_else(Laurent::zero);
-        let len_diff = lw[w as usize] - lw[y as usize];
-        if len_diff % 2 == 0 {
-            -&base
-        } else {
-            base
-        }
-    } else if poids == 1 {
-        // m = zeropart(v^{1 + L(y) − L(w)} · h), as a constant.
-        let shift = 1i32 + lw_y - lw_w;
-        let c = h.coeff(-shift);
-        Laurent::monomial(c, 0)
-    } else {
-        // poids[s] ≥ 2.
-        // m = nonnegpart(v^{poids[s] + L(y) − L(w)} · h).
-        let shift = poids as i32 + lw_y - lw_w;
-        let mut m = h.shifted(shift).nonneg_part();
-        // − Σ_{z = w−1 down to y+1}  nonnegpart( pospart(μ^s_{z,w}) ·
-        //     v^{L(y) − L(z)} · P̃_{y,z} )  over z with lft(z,s) < z,
-        //   mat[z][y] comparable and mat[w][z] comparable.
-        //
-        // PyCox reads `mues[s][int(mat[w][z].split('c')[s+2])]` for the CURRENT
-        // row w at column z (already computed, z > y) — `row_view[z*rank+s]`.
-        // A present (Some) mu value there exists exactly when (w, z) is
-        // comparable and the geometric mu condition for s holds, so the
-        // `mat[w][z][0]=='c'` guard is subsumed by `Some(_)`; we still need the
-        // shorter-row guard `mat[z][y][0]=='c'` (`ctx.leq(y, z)`).
-        for z in ((y + 1)..w).rev() {
-            if elms.lft(z, s) >= z {
-                continue;
-            }
-            if !ctx.leq(y, z) {
-                continue;
-            }
-            let Some(Some(mu_zw)) = row_view.get(z as usize * rank + s) else {
-                continue;
-            };
-            let mp = mu_zw.pos_part();
-            if mp.is_zero() {
-                continue;
-            }
-            let Some(pyz) = ctx.pol_at(z, y) else {
-                continue;
-            };
-            let sh = lw_y - ctx.lweights[z as usize] as i32;
-            // mp · v^sh · P̃_{y,z}
-            let prod = &mp.shifted(sh) * pyz;
-            m -= &prod.nonneg_part();
-        }
-        // Symmetrise: m = barpart(m) + m − zeropart(m).
-        if !m.is_zero() {
-            let bar = m.bar();
-            let c = m.zero_part();
-            m = &(&bar + &m) - &Laurent::monomial(c, 0);
-        }
-        m
     }
 }
 
@@ -625,6 +370,11 @@ pub(crate) fn compute_row(w: ElmIdx, ctx: &KlCtx<'_>) -> RowResult {
     // Diagonal: P̃_{w,w} = 1.
     pol[w_us] = PolSlot::Value(Laurent::one());
 
+    // Per-y scratch buffer for unequal-parameter mu values.  Hoisted out of
+    // the loop to avoid repeated allocation; reset to None at the top of each
+    // comparable-y iteration.
+    let mut computed: Vec<Option<Laurent>> = vec![None; rank];
+
     // y from w−1 down to 0.
     for y in (0..w).rev() {
         // ---- Phase A: Bruhat flag ----
@@ -639,7 +389,7 @@ pub(crate) fn compute_row(w: ElmIdx, ctx: &KlCtx<'_>) -> RowResult {
 
         // ---- Phase B: P̃_{y,w} ----
         let h = if ctx.uneq {
-            compute_h_uneq(w, y, first_desc, ctx, &pol)
+            crate::kl::compute_uneq::compute_h_uneq(w, y, first_desc, ctx, &pol)
         } else {
             compute_h(w, y, first_desc, ctx, &pol)
         };
@@ -656,18 +406,22 @@ pub(crate) fn compute_row(w: ElmIdx, ctx: &KlCtx<'_>) -> RowResult {
             // buffer so the z-loop (z > y) reads those completed columns; the
             // current column's `base..base+rank` slots are still None and are
             // never read (z > y strictly).
-            let mut computed: Vec<Option<Laurent>> = vec![None; rank];
+            // Reset the scratch buffer for this y.
+            for slot in computed.iter_mut() {
+                *slot = None;
+            }
             for (s, slot) in computed.iter_mut().enumerate() {
                 if ctx.weights[s] > 0 && elms.lft(y, s) < y && elms.lft(w, s) > w {
-                    let m = compute_mu_uneq(w, y, s, &h, ctx, row_mu, rank);
+                    let m =
+                        crate::kl::compute_uneq::compute_mu_uneq(w, y, s, &h, ctx, row_mu, rank);
                     *slot = Some(m);
                 }
             }
             // Now write h and the computed mu values into the row.
             pol[y as usize] = PolSlot::Value(h);
             let muv = mu_vals.as_mut().expect("uneq: mu_vals present");
-            for (s, c) in computed.into_iter().enumerate() {
-                muv[base + s] = c;
+            for (s, c) in computed.iter_mut().enumerate() {
+                muv[base + s] = c.take();
             }
         } else {
             pol[y as usize] = PolSlot::Value(h);
@@ -800,17 +554,14 @@ fn intern_row(
         mu_vals,
     } = result;
 
-    let pol_vec: Vec<PolSlot> = pol;
-    let mu_vals_vec = mu_vals;
-
     for y in (0..len).rev() {
-        match &pol_vec[y] {
+        match &pol[y] {
             PolSlot::Incomparable => {} // leave NOT_LEQ
             PolSlot::Value(p) => {
                 pol_ids[y] = intern_pol(pols, pool_index, p.clone());
             }
         }
-        if let (Some(vals), Some(ids)) = (mu_vals_vec.as_ref(), mu_ids.as_mut()) {
+        if let (Some(vals), Some(ids)) = (mu_vals.as_ref(), mu_ids.as_mut()) {
             for s in 0..rank {
                 if let Some(m) = &vals[y * rank + s] {
                     ids[y * rank + s] = intern_mu(&mut mues[s], &mut mu_index[s], m.clone());
@@ -860,19 +611,10 @@ fn intern_mu(pool: &mut Vec<Laurent>, index: &mut HashMap<Laurent, u32>, m: Laur
 mod tests {
     use super::*;
 
+    /// Build a KlTable for the named group using equal parameters.
     fn table_for(spec: &str) -> KlTable {
         let g = CoxeterGroup::from_type(spec).unwrap();
         let opts = KlOpts::equal(g.rank);
-        klpolynomials_seq(&g, &opts).unwrap()
-    }
-
-    fn table_for_weights(spec: &str, weights: Vec<u32>) -> KlTable {
-        let g = CoxeterGroup::from_type(spec).unwrap();
-        let opts = KlOpts {
-            weights,
-            threads: None,
-            layer_chunk: None,
-        };
         klpolynomials_seq(&g, &opts).unwrap()
     }
 
@@ -945,106 +687,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Unequal-parameter unit tests (Task 10)
-    // -----------------------------------------------------------------------
-
-    /// B2 with weights [2, 1]: Stored mode; pol pool has exactly the three
-    /// canonical polynomials {1, 1−v², 1+v²}.  Negative coefficients are
-    /// correct here (unequal parameters).
-    #[test]
-    fn b2_w2_1_pol_pool() {
-        let t = table_for_weights("B2", vec![2, 1]);
-        assert_eq!(t.mu_mode, MuMode::Stored, "uneq ⇒ Stored mu mode");
-
-        let one = Laurent::one();
-        let one_minus_v2 = Laurent::from_coeffs(0, vec![1, 0, -1]);
-        let one_plus_v2 = Laurent::from_coeffs(0, vec![1, 0, 1]);
-
-        assert_eq!(t.pols.len(), 3, "B2[2,1] pol pool size == 3");
-        assert!(t.pols.contains(&one), "pool contains 1");
-        assert!(t.pols.contains(&one_minus_v2), "pool contains 1−v²");
-        assert!(t.pols.contains(&one_plus_v2), "pool contains 1+v²");
-    }
-
-    /// B2 with weights [2, 1]: the mu pool for generator 0 contains the
-    /// non-constant value `v⁻¹ + v` (PyCox `mpols[0] = [0, v**(-1)+v]`).  This
-    /// is the hand-checked negative/non-constant mu fact for the golden test.
-    #[test]
-    fn b2_w2_1_mu_pool() {
-        let t = table_for_weights("B2", vec![2, 1]);
-        // mues[0] must contain v⁻¹ + v (and zero); mues[1] only zero.
-        let vinv_plus_v = Laurent::from_coeffs(-1, vec![1, 0, 1]);
-        assert!(
-            t.mues[0].contains(&vinv_plus_v),
-            "mues[0] must contain v⁻¹+v, got {:?}",
-            t.mues[0]
-        );
-        assert!(
-            t.mues[0].contains(&Laurent::zero()),
-            "mues[0] must contain zero"
-        );
-        // mues[1]: generator 1 has weight 1; for B2[2,1] its only mu is zero.
-        assert!(
-            t.mues[1].iter().all(|m| m.is_zero()),
-            "mues[1] should be all zero for B2[2,1], got {:?}",
-            t.mues[1]
-        );
-    }
-
-    /// B2 with weights [0, 1]: weight-0 generator.  PyCox accepts this and the
-    /// pol pool then contains the zero polynomial (e.g. P̃_{e,[0]} = 0).  No mu
-    /// slots exist for the weight-0 generator 0.
-    #[test]
-    fn b2_w0_1_zero_pol_and_no_mu_for_weight0() {
-        let t = table_for_weights("B2", vec![0, 1]);
-        assert_eq!(t.mu_mode, MuMode::Stored);
-        // The zero polynomial is in the pool (P̃ can vanish at weight 0).
-        assert!(
-            t.pols.contains(&Laurent::zero()),
-            "weight-0 pol pool must contain zero, got {:?}",
-            t.pols
-        );
-        // No present mu slot exists for the weight-0 generator s=0.
-        let n = t.elms.len();
-        for w in 0..n {
-            let row = &t.rows[w];
-            let mu = row.mu.as_ref().expect("Stored row has mu");
-            let rank = t.rank();
-            // generator s = 0 has weight 0 ⇒ slot index `y * rank + 0`.
-            for y in 0..w {
-                let id = mu[y * rank];
-                assert_eq!(
-                    id, NO_MU,
-                    "weight-0 generator slot must be NO_MU at (w={w}, y={y})"
-                );
-            }
-        }
-    }
-
-    /// Cross-check: `table.mu(s, y, w)` resolves a known negative-sign /
-    /// non-constant mu.  For B2[2,1], μ^0 of the slot carrying `v⁻¹+v` must be
-    /// recoverable via the public accessor.  We locate it by scanning for the
-    /// unique present non-zero μ^0 value and assert it equals `v⁻¹+v`.
-    #[test]
-    fn b2_w2_1_mu_accessor() {
-        let t = table_for_weights("B2", vec![2, 1]);
-        let vinv_plus_v = Laurent::from_coeffs(-1, vec![1, 0, 1]);
-        let n = t.elms.len();
-        let mut found = false;
-        for w in 0..n {
-            for y in 0..w {
-                if !t.bruhat_leq(y as u32, w as u32) {
-                    continue;
-                }
-                let m = t.mu(0, y as u32, w as u32);
-                if m == vinv_plus_v {
-                    found = true;
-                }
-            }
-        }
-        assert!(found, "expected some μ^0_{{y,w}} == v⁻¹+v in B2[2,1]");
     }
 }
