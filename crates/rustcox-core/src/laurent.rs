@@ -33,16 +33,16 @@ fn normalize(mut val: i32, mut coeffs: Vec<i64>) -> (i32, Vec<i64>) {
     while coeffs.last() == Some(&0) {
         coeffs.pop();
     }
-    // strip leading zeros, advancing val
-    while coeffs.first() == Some(&0) {
-        coeffs.remove(0);
-        val += 1;
+    // count and drain leading zeros in one pass, advancing val
+    let leading = coeffs.iter().take_while(|&&c| c == 0).count();
+    if leading > 0 {
+        coeffs.drain(..leading);
+        val += leading as i32;
     }
     if coeffs.is_empty() {
-        (0, vec![])
-    } else {
-        (val, coeffs)
+        return (0, vec![]);
     }
+    (val, coeffs)
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +191,8 @@ impl Laurent {
 
     /// Evaluate at the integer `x`.
     ///
+    /// **Overflow is unchecked; intended for small |x| (KL uses x ∈ {−1, 1, 2}).**
+    ///
     /// For `val ≥ 0` any `x` is accepted.  For `val < 0` only `x ∈ {−1, 1}`
     /// are allowed (assert); for those values `v^(val+i)` = `x^(val+i)` is
     /// well-defined as an integer because `x^k = ±1` for all `k`.
@@ -299,7 +301,81 @@ impl std::ops::Add for &Laurent {
 impl std::ops::Sub for &Laurent {
     type Output = Laurent;
     fn sub(self, rhs: &Laurent) -> Laurent {
-        self + &(-rhs)
+        if self.is_zero() {
+            return -rhs;
+        }
+        if rhs.is_zero() {
+            return self.clone();
+        }
+        let lo = self.val.min(rhs.val);
+        let hi_self = self.val + self.coeffs.len() as i32 - 1;
+        let hi_rhs = rhs.val + rhs.coeffs.len() as i32 - 1;
+        let hi = hi_self.max(hi_rhs);
+        let len = (hi - lo + 1) as usize;
+        let mut result = vec![0i64; len];
+        let off_l = (self.val - lo) as usize;
+        for (i, &c) in self.coeffs.iter().enumerate() {
+            result[off_l + i] += c;
+        }
+        let off_r = (rhs.val - lo) as usize;
+        for (i, &c) in rhs.coeffs.iter().enumerate() {
+            result[off_r + i] -= c;
+        }
+        Laurent::from_coeffs(lo, result)
+    }
+}
+
+impl std::ops::AddAssign<&Laurent> for Laurent {
+    fn add_assign(&mut self, rhs: &Laurent) {
+        if rhs.is_zero() {
+            return;
+        }
+        if self.is_zero() {
+            *self = rhs.clone();
+            return;
+        }
+        let rhs_end = rhs.val + rhs.coeffs.len() as i32 - 1;
+        let self_end = self.val + self.coeffs.len() as i32 - 1;
+        if rhs.val >= self.val && rhs_end <= self_end {
+            // rhs range fits entirely within self — mutate in place
+            let off = (rhs.val - self.val) as usize;
+            for (i, &c) in rhs.coeffs.iter().enumerate() {
+                self.coeffs[off + i] += c;
+            }
+            // re-normalize: strip zero ends
+            let (v, c) = normalize(self.val, std::mem::take(&mut self.coeffs));
+            self.val = v;
+            self.coeffs = c;
+        } else {
+            *self = &*self + rhs;
+        }
+    }
+}
+
+impl std::ops::SubAssign<&Laurent> for Laurent {
+    fn sub_assign(&mut self, rhs: &Laurent) {
+        if rhs.is_zero() {
+            return;
+        }
+        if self.is_zero() {
+            *self = -rhs;
+            return;
+        }
+        let rhs_end = rhs.val + rhs.coeffs.len() as i32 - 1;
+        let self_end = self.val + self.coeffs.len() as i32 - 1;
+        if rhs.val >= self.val && rhs_end <= self_end {
+            // rhs range fits entirely within self — mutate in place
+            let off = (rhs.val - self.val) as usize;
+            for (i, &c) in rhs.coeffs.iter().enumerate() {
+                self.coeffs[off + i] -= c;
+            }
+            // re-normalize: strip zero ends
+            let (v, c) = normalize(self.val, std::mem::take(&mut self.coeffs));
+            self.val = v;
+            self.coeffs = c;
+        } else {
+            *self = &*self - rhs;
+        }
     }
 }
 
@@ -395,6 +471,44 @@ mod tests {
         assert_eq!(p.shifted(-3), Laurent::from_coeffs(-3, vec![1, 0, 1]));
         assert_eq!(p.eval_i64(2), 5);
         assert_eq!(p.scaled(-2), Laurent::from_coeffs(0, vec![-2, 0, -2]));
+        // negative val: -v⁻² + 6v⁻¹ - 12 + 8v  at x = -1
+        // = -(-1)⁻² + 6(-1)⁻¹ - 12 + 8(-1) = -1 - 6 - 12 - 8 = -27
+        assert_eq!(
+            Laurent::from_coeffs(-2, vec![-1, 6, -12, 8]).eval_i64(-1),
+            -27
+        );
+    }
+
+    #[test]
+    fn add_assign_and_sub_assign() {
+        // accumulate three polys in-place; result should equal fold with `+`
+        let a = Laurent::from_coeffs(0, vec![1, 2, 3]);
+        let b = Laurent::from_coeffs(1, vec![10, 20]);
+        let c = Laurent::from_coeffs(0, vec![100]);
+        let expected = &(&a + &b) + &c;
+
+        let mut acc = Laurent::zero();
+        acc += &a;
+        acc += &b;
+        acc += &c;
+        assert_eq!(acc, expected);
+
+        // in-place with cancellation: (1+v²) - (1+v²) == 0
+        let p = Laurent::from_coeffs(0, vec![1, 0, 1]);
+        let mut q = p.clone();
+        q -= &p;
+        assert_eq!(q, Laurent::zero());
+
+        // in-place subtraction producing zero for a monomial subset
+        let mut r = Laurent::from_coeffs(0, vec![3, 5, 7]);
+        r -= &Laurent::from_coeffs(0, vec![3, 5, 7]);
+        assert_eq!(r, Laurent::zero());
+
+        // fallback path: rhs range extends beyond self
+        let mut s = Laurent::from_coeffs(1, vec![1, 1]); // v + v²
+        let extra = Laurent::from_coeffs(0, vec![5, 5, 5]); // 5 + 5v + 5v²
+        s += &extra;
+        assert_eq!(s, Laurent::from_coeffs(0, vec![5, 6, 6]));
     }
 
     #[test]
