@@ -1,8 +1,13 @@
 # rustcox — agent guide
 
-Rust rewrite of PyCox's Kazhdan–Lusztig machinery. Read this first, then the
-plan: `docs/superpowers/plans/2026-06-10-rustcox-implementation.md` (the single
-source of truth for tasks, design, and conventions).
+Rust rewrite of PyCox's Kazhdan–Lusztig machinery.
+**Status: implementation complete through Task 18; plan tasks 0–18 done.**
+
+Read this first, then the plan:
+`docs/superpowers/plans/2026-06-10-rustcox-implementation.md` (task list,
+detailed design, and conventions). For as-built architecture see `docs/DESIGN.md`;
+for the oracle pipeline see `docs/VERIFICATION.md`; for HPC notes see
+`docs/HPC.md`.
 
 ## Ground rules
 
