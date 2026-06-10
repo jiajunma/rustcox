@@ -26,7 +26,7 @@
 use serde_json::{json, Value};
 
 use crate::{
-    kl::table::{KlTable, NOT_LEQ},
+    kl::table::{KlTable, MuMode, NOT_LEQ, NO_MU},
     laurent::Laurent,
 };
 
@@ -140,7 +140,12 @@ pub fn table_json(t: &KlTable) -> Value {
 /// Pool synthesis matches `gen_golden.py`: PyCox seeds `mues[s]` with `0` at
 /// index 0, so the synthesised pool is `{zero} ∪ {present values}` sorted by
 /// the `(val, coeffs)` key with `[]` first.  In Implicit (equal-parameter)
-/// mode a present slot may carry a zero value; it maps to pool index 0.
+/// mode a present slot may carry a zero value; it maps to pool index 0.  In
+/// Stored (unequal-parameter) mode the present slots and their values come
+/// from `rows[w].mu` / `mues[s]` (via [`mu_slot_present`] / [`KlTable::mu`]),
+/// so weight-0 generators contribute no slots; the synthesised pool is a
+/// canonical re-sort of the values that actually appear and therefore matches
+/// PyCox's `mues[s]` after canonicalisation.
 fn mumat_json(t: &KlTable, n: usize, rank: usize) -> Vec<Value> {
     // Per-generator sorted unique value keys (zero always included).
     let mut uniq_per_gen: Vec<Vec<(i32, Vec<i64>)>> = vec![vec![pol_key(&Laurent::zero())]; rank];
@@ -189,10 +194,24 @@ fn mumat_json(t: &KlTable, n: usize, rank: usize) -> Vec<Value> {
     mumat
 }
 
-/// Whether the mu slot `(s, y, w)` is *present*, matching PyCox's geometric
-/// condition `lft(y, s) < y && lft(w, s) > w`.  Presence is independent of
-/// the slot's value (a present slot may be zero).
+/// Whether the mu slot `(s, y, w)` is *present*.
+///
+/// - **Implicit (equal-parameter) mode:** the geometric condition
+///   `lft(y, s) < y && lft(w, s) > w` (a present slot may still be zero).
+/// - **Stored (unequal-parameter) mode:** the stored slot id is not `NO_MU`.
+///   Weight-0 generators carry no slot, and PyCox's geometric condition is
+///   gated on `poids[s] > 0`, so reading the row directly is authoritative.
 fn mu_slot_present(t: &KlTable, s: usize, y: usize, w: usize) -> bool {
-    let elms = &t.elms;
-    elms.lft(y as u32, s) < y as u32 && elms.lft(w as u32, s) > w as u32
+    match t.mu_mode {
+        MuMode::Implicit => {
+            let elms = &t.elms;
+            elms.lft(y as u32, s) < y as u32 && elms.lft(w as u32, s) > w as u32
+        }
+        MuMode::Stored => {
+            let rank = t.elms.rank;
+            let row = &t.rows[w];
+            let mu_vec = row.mu.as_ref().expect("Stored mode: mu vec missing");
+            mu_vec[y * rank + s] != NO_MU
+        }
+    }
 }

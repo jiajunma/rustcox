@@ -112,3 +112,40 @@ fn kl_h3() {
 fn kl_i5() {
     check_kl_golden("kl_I5_w1");
 }
+
+// ---------------------------------------------------------------------------
+// Unequal-parameter golden suites (Task 10)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn kl_b2_w2_1() {
+    check_kl_golden("kl_B2_w2_1");
+}
+
+#[test]
+fn kl_b2_w1_2() {
+    check_kl_golden("kl_B2_w1_2");
+}
+
+#[test]
+fn kl_b3_w2_1_1() {
+    check_kl_golden("kl_B3_w2_1_1");
+}
+
+#[test]
+fn kl_g2_w1_3() {
+    check_kl_golden("kl_G2_w1_3");
+}
+
+#[test]
+fn kl_g2_w3_1() {
+    check_kl_golden("kl_G2_w3_1");
+}
+
+/// Weight-0 generator coverage: B2 with weights [0, 1].  PyCox accepts
+/// weight 0 (verified during Task 10); the pol pool may then contain the
+/// zero polynomial, and weight-0 generators carry no mu slots.
+#[test]
+fn kl_b2_w0_1() {
+    check_kl_golden("kl_B2_w0_1");
+}
