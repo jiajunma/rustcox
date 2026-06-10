@@ -63,17 +63,7 @@ fn run_one(path: &Path) -> OneResult {
         Ok(v) => v,
         Err(e) => return OneResult::Fail(format!("read error: {e}")),
     };
-
-    let kind = match doc.get("kind").and_then(|v| v.as_str()) {
-        Some(k) => k.to_string(),
-        None => return OneResult::Fail("missing 'kind' field".to_string()),
-    };
-
-    match kind.as_str() {
-        "kl" => run_kl_one(&doc),
-        "basics" => run_basics_one(&doc),
-        other => OneResult::Skip(format!("unknown kind '{other}'")),
-    }
+    run_one_from_value(&doc)
 }
 
 fn run_kl_one(doc: &Value) -> OneResult {
@@ -187,6 +177,60 @@ fn collect_golden_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .collect();
     entries.sort();
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_kind_is_fail_not_skip() {
+        // A golden doc with an unrecognised "kind" must produce Fail, not Skip.
+        let doc = json!({"kind": "future_thing", "type": [{"series": "A", "rank": 2}]});
+        match run_one_from_value(&doc) {
+            OneResult::Fail(msg) => {
+                assert!(
+                    msg.contains("future_thing"),
+                    "Fail message should name the kind, got: {msg}"
+                );
+            }
+            OneResult::Skip(_) => panic!("unknown kind should be Fail, not Skip"),
+            OneResult::Pass => panic!("unknown kind should be Fail, not Pass"),
+        }
+    }
+
+    #[test]
+    fn cyc_int_i2m_is_skip() {
+        // I2(7) needs CycInt and must produce Skip.
+        let doc = json!({"kind": "kl", "type": [{"series": "I", "m": 7}]});
+        match run_one_from_value(&doc) {
+            OneResult::Skip(reason) => {
+                assert!(
+                    reason.contains("CycInt"),
+                    "Skip reason should mention CycInt, got: {reason}"
+                );
+            }
+            other => panic!(
+                "I2(7) should be Skip, got {:?}",
+                matches!(other, OneResult::Pass)
+            ),
+        }
+    }
+}
+
+/// Internal helper used by tests: run a single golden doc given as a `Value`.
+fn run_one_from_value(doc: &Value) -> OneResult {
+    let kind = match doc.get("kind").and_then(|v| v.as_str()) {
+        Some(k) => k.to_string(),
+        None => return OneResult::Fail("missing 'kind' field".to_string()),
+    };
+
+    match kind.as_str() {
+        "kl" => run_kl_one(doc),
+        "basics" => run_basics_one(doc),
+        other => OneResult::Fail(format!("unknown kind '{other}' in golden file")),
+    }
 }
 
 /// Find the first difference between two JSON objects (for error reporting).

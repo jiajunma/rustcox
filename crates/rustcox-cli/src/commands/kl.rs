@@ -3,14 +3,14 @@
 use std::{
     io::{BufWriter, Write},
     path::Path,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
 use rustcox_core::{
     group::CoxeterGroup,
     io::to_canonical_json,
-    kl::{cells::CellData, klpolynomials, klpolynomials_seq, KlOpts},
+    kl::{cells::CellData, klpolynomials, klpolynomials_seq, KlOpts, KlTable},
 };
 
 /// Parsed weight specification from `--weights` argument.
@@ -96,19 +96,7 @@ pub fn run(args: KlArgs) -> anyhow::Result<()> {
     let show_summary = args.summary || args.output.is_none();
 
     if show_summary {
-        let npols = table.pols.len();
-        let lcells = cells.lcells.len();
-        let rcells = cells.rcells.len();
-        let tcells = cells.tcells.len();
-        let nduflo = cells.duflo.len();
-        let narrows = cells.arrows.len();
-        let checks_ok = cells.checks_ok;
-        println!(
-            "npols={npols} lcells={lcells} rcells={rcells} tcells={tcells} \
-             nduflo={nduflo} narrows={narrows} checks_ok={checks_ok} \
-             time={:.3}s",
-            elapsed.as_secs_f64()
-        );
+        print_summary(&table, &cells, elapsed);
     }
 
     if let Some(ref out_path) = args.output {
@@ -117,6 +105,47 @@ pub fn run(args: KlArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Print the one-line KL summary to stdout.
+///
+/// # Summary-line format
+///
+/// Space-separated `key=value` pairs on a single line.  Stable keys (suitable
+/// for scripting and golden comparisons) are always emitted in this order:
+///
+/// ```text
+/// npols=<N> mues=<N> lcells=<N> rcells=<N> tcells=<N> duflo=<N> arrows=<N> checks_ok=<bool>
+/// ```
+///
+/// The `time=<seconds>s` field is **always emitted last** and is **not stable
+/// for scripting** — its value depends on hardware and load.
+///
+/// Key definitions:
+/// - `npols`     — number of distinct KL polynomials (including the trivial `1`)
+/// - `mues`      — number of non-zero μ-coefficients (leading terms of KL polys)
+/// - `lcells`    — number of left cells
+/// - `rcells`    — number of right cells
+/// - `tcells`    — number of two-sided cells
+/// - `duflo`     — number of Duflo involutions
+/// - `arrows`    — number of W-graph arrows
+/// - `checks_ok` — whether all internal consistency checks passed
+/// - `time`      — wall time in seconds (last, unstable for scripting)
+pub fn print_summary(table: &KlTable, cells: &CellData, elapsed: Duration) {
+    let npols = table.pols.len();
+    let mues = table.mu_count();
+    let lcells = cells.lcells.len();
+    let rcells = cells.rcells.len();
+    let tcells = cells.tcells.len();
+    let duflo = cells.duflo.len();
+    let arrows = cells.arrows.len();
+    let checks_ok = cells.checks_ok;
+    println!(
+        "npols={npols} mues={mues} lcells={lcells} rcells={rcells} tcells={tcells} \
+         duflo={duflo} arrows={arrows} checks_ok={checks_ok} \
+         time={:.3}s",
+        elapsed.as_secs_f64()
+    );
 }
 
 /// Write a `serde_json::Value` to a file; gzip if the path ends with `.gz`.

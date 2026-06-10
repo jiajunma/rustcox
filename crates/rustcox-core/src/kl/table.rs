@@ -267,6 +267,40 @@ impl KlTable {
     /// In `Implicit` mode this is cheaper than `mu()` because it reads a single
     /// coefficient without allocating a shifted copy.
     #[inline]
+    /// Count the total number of non-zero μ-coefficient slots across the table.
+    ///
+    /// This is the number of `(s, y, w)` triples with `y < w`, `y ≤_B w`, and
+    /// `μ^s_{y,w} ≠ 0`.  Suitable for use in the one-line summary output.
+    pub fn mu_count(&self) -> usize {
+        let rank = self.rank();
+        let n = self.rows.len();
+        match self.mu_mode {
+            MuMode::Implicit => self
+                .rows
+                .iter()
+                .map(|row| {
+                    row.mu_present
+                        .as_ref()
+                        .map(|v| v.iter().filter(|&&b| b).count())
+                        .unwrap_or(0)
+                })
+                .sum(),
+            MuMode::Stored => {
+                let mut count = 0usize;
+                for w in 0..n {
+                    if let Some(mu_vec) = self.rows[w].mu.as_ref() {
+                        count += mu_vec
+                            .iter()
+                            .take((w + 1) * rank)
+                            .filter(|&&idx| idx != NO_MU && idx != 0)
+                            .count();
+                    }
+                }
+                count
+            }
+        }
+    }
+
     pub fn mu_is_nonzero(&self, s: usize, y: ElmIdx, w: ElmIdx) -> bool {
         debug_assert!(y <= w, "mu_is_nonzero: y={y} > w={w}");
         if y == w {

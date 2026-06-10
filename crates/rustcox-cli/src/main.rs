@@ -52,7 +52,10 @@ enum Commands {
         #[arg(long, value_name = "K")]
         layer_chunk: Option<usize>,
 
-        /// Print a one-line summary (npols, cell counts, timing).
+        /// Print a one-line summary of space-separated key=value pairs.
+        ///
+        /// Stable keys (in order): npols mues lcells rcells tcells duflo arrows checks_ok.
+        /// The time= field is always last and is NOT stable for scripting (hardware-dependent).
         #[arg(long)]
         summary: bool,
 
@@ -82,6 +85,9 @@ enum Commands {
     /// Reads every kl_*.json[.gz] and basics_*.json[.gz] from the golden
     /// directory, rebuilds the group and computations, and compares.
     /// Exit code 0 iff all tests pass.
+    ///
+    /// Golden files whose type contains an I2(m) component with m not in
+    /// {3, 4, 5, 6} are reported as SKIP (pending CyclotomicInteger support).
     Selftest {
         /// Directory containing golden files.  Default: ./golden
         #[arg(long, value_name = "DIR", default_value = "golden")]
