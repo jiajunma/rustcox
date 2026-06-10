@@ -24,7 +24,8 @@ fn check_kl_golden(name: &str) {
     let group = io::group_from_type_json(type_val)
         .unwrap_or_else(|e| panic!("{name}: build group failed: {e:?}"));
 
-    let weights = io::weights_from_json(&g["weights"], group.rank);
+    let weights = io::weights_from_json(&g["weights"], group.rank)
+        .unwrap_or_else(|e| panic!("{name}: parse weights failed: {e}"));
 
     // Sequential reference driver.
     let seq_opts = KlOpts {

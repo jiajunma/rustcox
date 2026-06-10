@@ -15,6 +15,7 @@
 //!   `{"series":"I","rank":2,"m":7}` (for dihedral groups).
 
 use serde_json::{json, Value};
+use thiserror::Error;
 
 use crate::{
     cartan::Series,
@@ -24,6 +25,13 @@ use crate::{
     kl::table::{KlTable, MuMode, NOT_LEQ, NO_MU},
     laurent::Laurent,
 };
+
+/// Errors that can occur when parsing golden JSON.
+#[derive(Debug, Error)]
+pub enum IoError {
+    #[error("weight at index {index} is not an integer: {value:?}")]
+    NonIntegerWeight { index: usize, value: Value },
+}
 
 // ---------------------------------------------------------------------------
 // Pool canonicalisation key
@@ -102,7 +110,7 @@ fn type_json(components: &[TypeComponent]) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// mu pool synthesis: build per-generator canonical pools + return remap
+// mu pool synthesis: build per-generator canonical pools
 // ---------------------------------------------------------------------------
 
 /// Sorted unique pool keys per generator: `Vec<(val, coeffs)>`, one entry per
@@ -145,61 +153,6 @@ fn mu_pools(t: &KlTable, n: usize, rank: usize) -> (Vec<Vec<Value>>, MuPoolKeys)
         .collect();
 
     (pools_json, uniq_per_gen)
-}
-
-// ---------------------------------------------------------------------------
-// Public stub exporter (Task 9 compatibility layer — still used by table_json)
-// ---------------------------------------------------------------------------
-
-/// Emit `{"elms", "pols", "klmat", "mumat"}` of the canonical golden document.
-///
-/// This is the Task 9 stub used by tests; the full document is [`to_canonical_json`].
-pub fn table_json(t: &KlTable) -> Value {
-    let n = t.elms.len();
-    let rank = t.elms.rank;
-
-    // -- elms: canonical words --
-    let elms: Vec<Value> = t
-        .elms
-        .elms
-        .iter()
-        .map(|w| Value::from(w.iter().map(|&s| s as u64).collect::<Vec<_>>()))
-        .collect();
-
-    // -- pols: dedup + canonical sort + remap --
-    let (pols_json, pol_remap) = canonical_pol_pool(&t.pols);
-
-    // -- klmat: per-row pol indices (or -1) --
-    let mut klmat: Vec<Value> = Vec::with_capacity(n);
-    for w in 0..n {
-        let row = &t.rows[w];
-        let entries: Vec<i64> = (0..=w)
-            .map(|y| {
-                if y == w {
-                    // diagonal: P_{w,w} = 1 = pols[0]; remap it canonically
-                    pol_remap[0] as i64
-                } else {
-                    let idx = row.pol[y];
-                    if idx == NOT_LEQ {
-                        -1
-                    } else {
-                        pol_remap[idx as usize] as i64
-                    }
-                }
-            })
-            .collect();
-        klmat.push(Value::from(entries));
-    }
-
-    // -- mumat: synthesise per-generator mu pools from present slots --
-    let mumat = mumat_json(t, n, rank);
-
-    json!({
-        "elms": elms,
-        "pols": pols_json,
-        "klmat": klmat,
-        "mumat": mumat,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -479,13 +432,24 @@ pub fn group_from_type_json(v: &Value) -> Result<CoxeterGroup, crate::cartan::Er
 ///
 /// If `v` is `null` or absent (i.e. the key was not present) this returns
 /// an all-ones vector of length `rank`.
-pub fn weights_from_json(v: &Value, rank: usize) -> Vec<u32> {
+///
+/// Returns [`IoError::NonIntegerWeight`] if any element is not a non-negative
+/// integer.
+pub fn weights_from_json(v: &Value, rank: usize) -> Result<Vec<u32>, IoError> {
     match v.as_array() {
         Some(arr) => arr
             .iter()
-            .map(|w| w.as_u64().expect("weight must be an integer") as u32)
+            .enumerate()
+            .map(|(index, w)| {
+                w.as_u64()
+                    .map(|n| n as u32)
+                    .ok_or_else(|| IoError::NonIntegerWeight {
+                        index,
+                        value: w.clone(),
+                    })
+            })
             .collect(),
-        None => vec![1u32; rank],
+        None => Ok(vec![1u32; rank]),
     }
 }
 
@@ -522,45 +486,6 @@ fn mumat_json_from_pools(
         mumat.push(Value::from(wrow));
     }
     mumat
-}
-
-/// Build `mumat`: for each generator collect the present slots' mu *values*,
-/// synthesise a canonical pool seeded with zero, and remap each present slot
-/// to its value's pool index (`-1` for absent slots).
-///
-/// Pool synthesis matches `gen_golden.py`: PyCox seeds `mues[s]` with `0` at
-/// index 0, so the synthesised pool is `{zero} ∪ {present values}` sorted by
-/// the `(val, coeffs)` key with `[]` first.  In Implicit (equal-parameter)
-/// mode a present slot may carry a zero value; it maps to pool index 0.  In
-/// Stored (unequal-parameter) mode the present slots and their values come
-/// from `rows[w].mu` / `mues[s]` (via [`mu_slot_present`] / [`KlTable::mu`]),
-/// so weight-0 generators contribute no slots; the synthesised pool is a
-/// canonical re-sort of the values that actually appear and therefore matches
-/// PyCox's `mues[s]` after canonicalisation.
-fn mumat_json(t: &KlTable, n: usize, rank: usize) -> Vec<Value> {
-    // Per-generator sorted unique value keys (zero always included).
-    let mut uniq_per_gen: Vec<Vec<(i32, Vec<i64>)>> = vec![vec![pol_key(&Laurent::zero())]; rank];
-
-    // First pass: collect present-slot values.
-    for w in 0..n {
-        for y in 0..w {
-            // Only Bruhat-comparable pairs can carry mu slots.
-            if !t.bruhat_leq(y as u32, w as u32) {
-                continue;
-            }
-            for (s, uniq) in uniq_per_gen.iter_mut().enumerate() {
-                if mu_slot_present(t, s, y, w) {
-                    uniq.push(pol_key(&t.mu(s, y as u32, w as u32)));
-                }
-            }
-        }
-    }
-    for uniq in &mut uniq_per_gen {
-        uniq.sort();
-        uniq.dedup();
-    }
-
-    mumat_json_from_pools(t, n, rank, &uniq_per_gen)
 }
 
 /// Whether the mu slot `(s, y, w)` is *present*.
