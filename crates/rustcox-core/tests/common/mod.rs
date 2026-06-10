@@ -37,36 +37,8 @@ pub fn golden(name: &str) -> serde_json::Value {
 
 /// Parse the `"type"` field of a golden file into `(Series, rank)` pairs.
 ///
-/// Each element of the JSON array is an object with fields `"series"`, `"rank"`,
-/// and optionally `"m"` (for I-type dihedral groups).
+/// Delegates to `io::components_from_type_json` — single source of truth.
 pub fn components_of(g: &serde_json::Value) -> Vec<(Series, usize)> {
-    let arr = g["type"]
-        .as_array()
-        .expect("golden \"type\" field is not an array");
-    arr.iter()
-        .map(|item| {
-            let series_str = item["series"]
-                .as_str()
-                .expect("golden component missing \"series\"");
-            let rank = item["rank"]
-                .as_u64()
-                .expect("golden component missing \"rank\"") as usize;
-            let series = match series_str {
-                "A" => Series::A,
-                "B" => Series::B,
-                "C" => Series::C,
-                "D" => Series::D,
-                "E" => Series::E,
-                "F" => Series::F,
-                "G" => Series::G,
-                "H" => Series::H,
-                "I" => {
-                    let m = item["m"].as_u64().expect("I-type component missing \"m\"") as u32;
-                    Series::I(m)
-                }
-                other => panic!("unknown series in golden: {other}"),
-            };
-            (series, rank)
-        })
-        .collect()
+    rustcox_core::io::components_from_type_json(&g["type"])
+        .unwrap_or_else(|e| panic!("failed to parse golden \"type\": {e}"))
 }

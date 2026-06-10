@@ -473,3 +473,44 @@ fn a4_element_table_invariants() {
 }
 
 // I7/I8 golden coverage arrives with CycInt (plan Task 18).
+
+// ---------------------------------------------------------------------------
+// Task 14: basics_documents — full-document comparison
+// ---------------------------------------------------------------------------
+
+/// Verify that `basics_json(&group)` produces a document that matches the
+/// golden file exactly, for every non-CycInt basics file.
+///
+/// The test uses `io::group_from_type_json` (single source of truth) to build
+/// the group and `io::basics_json` to produce the document.
+#[test]
+fn basics_documents() {
+    for name in BASICS_NAMES {
+        let g = common::golden(name);
+        let group = rustcox_core::io::group_from_type_json(&g["type"])
+            .unwrap_or_else(|e| panic!("{name}: group_from_type_json failed: {e:?}"));
+
+        let ours = rustcox_core::io::basics_json(&group);
+
+        // Per-key diagnostics before whole-document assertion.
+        let golden_obj = g.as_object().expect("golden is a JSON object");
+        for (key, want) in golden_obj {
+            let got = &ours[key];
+            if let (Some(got_rows), Some(want_rows)) = (got.as_array(), want.as_array()) {
+                assert_eq!(
+                    got_rows.len(),
+                    want_rows.len(),
+                    "{name}:{key} length mismatch"
+                );
+                for (i, (g_row, w_row)) in got_rows.iter().zip(want_rows.iter()).enumerate() {
+                    assert_eq!(g_row, w_row, "{name}:{key}[{i}] mismatch");
+                }
+            } else {
+                assert_eq!(got, want, "{name}:{key} mismatch");
+            }
+        }
+
+        // Whole-document equality catches any extra keys.
+        assert_eq!(&ours, &g, "{name}: whole basics document mismatch");
+    }
+}

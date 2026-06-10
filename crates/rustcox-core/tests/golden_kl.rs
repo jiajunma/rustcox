@@ -1,34 +1,30 @@
-//! Golden tests: verify sequential KL polynomials against PyCox golden data.
+//! Golden tests: verify full canonical KL documents against PyCox golden data.
 //!
-//! Task 9 compares only the `elms`, `pols`, `klmat`, and `mumat` keys (the
-//! KL-polynomial stub of `io::table_json`).  Task 11 adds the cell/arrow keys;
-//! Task 14 compares the full document.
+//! Task 14 upgrades this from partial key comparison (Task 9/11) to a
+//! full-document comparison: we call [`rustcox_core::io::to_canonical_json`]
+//! and compare the entire JSON value against the golden file, key-by-key for
+//! useful diagnostics plus a final whole-document assertion.
+//!
+//! All 18 regular suites × both drivers (seq + par) must pass.
+//! Two `#[ignore = "slow"]` tests cover the big gz goldens (A5, F4).
 
 mod common;
 
-use rustcox_core::group::CoxeterGroup;
-use rustcox_core::kl::{klpolynomials, klpolynomials_seq, CellData, KlOpts, KlTable};
+use rustcox_core::io;
+use rustcox_core::kl::{klpolynomials, klpolynomials_seq, CellData, KlOpts};
 
-/// Build the group, run a KL computation, and compare the canonical-JSON output
-/// against the golden file.  Covers the KL-polynomial keys (`elms`, `pols`,
-/// `klmat`, `mumat`) plus the Task 11 cell keys (`arrows`, `lcells`, `duflo`,
-/// `lorder`, `rcells`, `tcells`).
+/// Build the group, run a KL computation, and compare the full canonical
+/// JSON document against the golden file key-by-key (plus whole-doc).
 ///
-/// Runs against **both** drivers (Task 12): the sequential reference and the
-/// parallel driver at `threads = Some(4)`.  The parallel driver must reproduce
-/// the golden data byte-for-byte, exactly like the sequential one.
+/// Runs against **both** drivers (sequential and parallel at `threads = Some(4)`).
 fn check_kl_golden(name: &str) {
     let g = common::golden(name);
-    let components = common::components_of(&g);
-    let group = CoxeterGroup::from_components(&components)
+
+    let type_val = &g["type"];
+    let group = io::group_from_type_json(type_val)
         .unwrap_or_else(|e| panic!("{name}: build group failed: {e:?}"));
 
-    let weights: Vec<u32> = g["weights"]
-        .as_array()
-        .expect("golden \"weights\" is not an array")
-        .iter()
-        .map(|w| w.as_u64().expect("weight not an integer") as u32)
-        .collect();
+    let weights = io::weights_from_json(&g["weights"], group.rank);
 
     // Sequential reference driver.
     let seq_opts = KlOpts {
@@ -38,7 +34,9 @@ fn check_kl_golden(name: &str) {
     };
     let seq_table = klpolynomials_seq(&group, &seq_opts)
         .unwrap_or_else(|e| panic!("{name}: klpolynomials_seq failed: {e:?}"));
-    compare_table_to_golden(name, "seq", &seq_table, &g);
+    let seq_cells = CellData::from_table(&seq_table);
+    let seq_doc = io::to_canonical_json(&seq_table, &seq_cells, &group);
+    compare_full_document(name, "seq", &seq_doc, &g);
 
     // Parallel driver at 4 threads — must match golden byte-for-byte too.
     let par_opts = KlOpts {
@@ -48,27 +46,26 @@ fn check_kl_golden(name: &str) {
     };
     let par_table = klpolynomials(&group, &par_opts)
         .unwrap_or_else(|e| panic!("{name}: klpolynomials (t=4) failed: {e:?}"));
-    compare_table_to_golden(name, "par(t=4)", &par_table, &g);
+    let par_cells = CellData::from_table(&par_table);
+    let par_doc = io::to_canonical_json(&par_table, &par_cells, &group);
+    compare_full_document(name, "par(t=4)", &par_doc, &g);
 }
 
-/// Compare one computed [`KlTable`] against the golden JSON, naming the driver
-/// in any failure message.
-fn compare_table_to_golden(name: &str, driver: &str, table: &KlTable, g: &serde_json::Value) {
-    // Merge the KL stub and the cell data into one comparison map.
-    let mut ours = rustcox_core::io::table_json(table);
-    let cells = CellData::from_table(table);
-    let cells_json = rustcox_core::io::cells_json(&cells);
-    let ours_obj = ours.as_object_mut().expect("table_json is an object");
-    for (k, val) in cells_json.as_object().expect("cells_json is an object") {
-        ours_obj.insert(k.clone(), val.clone());
-    }
+/// Full-document comparison: assert every key present in the golden matches the
+/// computed document, then assert the whole documents are equal for a clean
+/// final check.
+fn compare_full_document(
+    name: &str,
+    driver: &str,
+    ours: &serde_json::Value,
+    golden: &serde_json::Value,
+) {
+    let golden_obj = golden.as_object().expect("golden is a JSON object");
 
-    for key in [
-        "elms", "pols", "klmat", "mumat", "arrows", "lcells", "duflo", "lorder", "rcells", "tcells",
-    ] {
+    // Per-key diagnostics: array keys are compared element-by-element for
+    // better failure messages.
+    for (key, want) in golden_obj {
         let got = &ours[key];
-        let want = &g[key];
-        // For array-valued keys compare element-by-element so failures name the row.
         if let (Some(got_rows), Some(want_rows)) = (got.as_array(), want.as_array()) {
             assert_eq!(
                 got_rows.len(),
@@ -82,7 +79,14 @@ fn compare_table_to_golden(name: &str, driver: &str, table: &KlTable, g: &serde_
             assert_eq!(got, want, "{name}[{driver}]:{key} mismatch");
         }
     }
+
+    // Whole-document equality catches any extra keys emitted by our code.
+    assert_eq!(ours, golden, "{name}[{driver}] whole-document mismatch");
 }
+
+// ---------------------------------------------------------------------------
+// Regular test suite (18 golden files, both drivers each)
+// ---------------------------------------------------------------------------
 
 #[test]
 fn kl_a1() {
@@ -173,10 +177,24 @@ fn kl_g2_w3_1() {
     check_kl_golden("kl_G2_w3_1");
 }
 
-/// Weight-0 generator coverage: B2 with weights [0, 1].  PyCox accepts
-/// weight 0 (verified during Task 10); the pol pool may then contain the
-/// zero polynomial, and weight-0 generators carry no mu slots.
+/// Weight-0 generator coverage: B2 with weights [0, 1].
 #[test]
 fn kl_b2_w0_1() {
     check_kl_golden("kl_B2_w0_1");
+}
+
+// ---------------------------------------------------------------------------
+// Big gz goldens (A5, F4) — ignored in default profile, included in release CI
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "slow"]
+fn kl_a5() {
+    check_kl_golden("kl_A5_w1");
+}
+
+#[test]
+#[ignore = "slow"]
+fn kl_f4() {
+    check_kl_golden("kl_F4_w1");
 }
