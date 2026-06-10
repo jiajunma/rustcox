@@ -73,3 +73,30 @@ PyCox timings are from a single-threaded CPython 3 run on comparable hardware
 rustcox is roughly **150–440× faster** than PyCox across these groups,
 driven by compiled Rust, integer arithmetic throughout (no Python object
 overhead), and the interned polynomial pool avoiding redundant allocation.
+
+## XMU HPC runs (2026-06-11, Intel 64-core node, 256 GB)
+
+First full-table runs at scale, on one `cpu`-partition node (SLURM scripts in
+`hpc/`). All runs: equal parameters, `checks_ok=true`.
+
+| Group | \|W\| | seq compute | par t=64 | speedup | peak RSS | npols | lcells | tcells |
+|-------|-------|-------------|----------|---------|----------|-------|--------|--------|
+| H4    | 14 400 | 99.7 s     | 17.2 s   | 5.8×    | 47 GB*   | 726 635 | 206  | 13     |
+| D6    | 23 040 | 61.6 s     | 16.3 s   | 3.8×    | 3.4 GB   | 5 836  | 578   | 27     |
+| B6    | 46 080 | —          | 74.7 s   | —       | 13.8 GB  | 57 738 | 752   | 26     |
+| E6    | 51 840 | —          | 100.8 s  | —       | 17.2 GB  | 46 681 | 652   | 17     |
+
+\* H4 peak RSS is dominated by the canonical-JSON export (a ~2 GB document via
+an in-memory `serde_json::Value` tree); the KL computation alone stays in the
+single-digit GB range, consistent with the D6/B6/E6 rows (no export).
+
+**Determinism proven at scale**: the H4 sequential and 64-thread parallel runs
+produced **byte-identical** 1.96 GB canonical JSON documents (`cmp` clean).
+
+**Independent mathematical cross-checks**: H4 has 206 left cells and 13
+two-sided cells (Alvis, *The left cells of the Coxeter group of type H4*,
+J. Algebra 107 (1987)); E6 has 17 two-sided cells — all reproduced exactly.
+
+Parallel speedup grows with layer width as predicted (F4 1.5× → D6 3.8× →
+H4 5.8× at 64 threads); the sequential intern phase is the remaining
+Amdahl bottleneck.
