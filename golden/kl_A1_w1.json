@@ -1,0 +1,1 @@
+{"N":1,"arrows":[[0,1]],"duflo":[[0,0,1],[1,1,1]],"elms":[[],[0]],"kind":"kl","klmat":[[0],[0,0]],"lcells":[[0],[1]],"lorder":[[1,1],[0,1]],"mues":[[{"c":[],"v":0}]],"mumat":[[[-1]],[[-1],[-1]]],"order":2,"pols":[{"c":[1],"v":0}],"rank":1,"rcells":[[0],[1]],"schema":"rustcox-golden-v1","tcells":[[0],[1]],"type":[{"rank":1,"series":"A"}],"weights":[1]}

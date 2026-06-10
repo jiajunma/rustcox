@@ -1,0 +1,18 @@
+[package]
+name = "rustcox-cli"
+description = "CLI for rustcox: KL polynomials for finite Coxeter groups"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rustcox"
+path = "src/main.rs"
+
+[dependencies]
+rustcox-core = { path = "../rustcox-core" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

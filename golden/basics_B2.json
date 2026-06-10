@@ -1,0 +1,1 @@
+{"N":4,"coxetermat":[[1,4],[4,1]],"degrees":[2,4],"kind":"basics","length_histogram":[1,2,2,2,1],"longest_word":[0,1,0,1],"order":8,"rank":2,"roots":[[1,0],[0,1],[1,1],[2,1],[-1,0],[0,-1],[-1,-1],[-2,-1]],"schema":"rustcox-golden-v1","type":[{"rank":2,"series":"B"}]}
