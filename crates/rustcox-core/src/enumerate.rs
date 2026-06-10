@@ -45,6 +45,7 @@ use crate::{
 /// Elements are stored in canonical order: sorted by `(length, lex)` where
 /// `lex` compares canonical reduced words.  This matches PyCox's `allwords`
 /// output order and is the index base for all KL data.
+#[derive(Debug, PartialEq)]
 pub struct ElementTable {
     /// Canonical reduced words, one per element, in canonical order.
     pub elms: Vec<Word>,

@@ -10,6 +10,7 @@ pub mod cartan;
 pub mod element;
 pub mod enumerate;
 pub mod group;
+pub mod kl;
 pub mod laurent;
 pub mod ring;
 pub mod roots;
