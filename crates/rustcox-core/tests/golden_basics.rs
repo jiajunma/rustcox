@@ -472,28 +472,4 @@ fn a4_element_table_invariants() {
     }
 }
 
-/// Placeholder for I7 and I8 — needs CycInt (Task 18).
-#[test]
-#[ignore = "needs CycInt (Task 18)"]
-fn cartan_data_i7_i8() {
-    for name in &["basics_I7", "basics_I8"] {
-        let g = common::golden(name);
-        let components = common::components_of(&g);
-        let (series, rank) = components[0];
-        let cartan = cartan_mat(series, rank)
-            .unwrap_or_else(|e| panic!("{name}: cartan_mat({series:?}, {rank}) failed: {e}"));
-        let cox = coxeter_mat_from_cartan(&cartan);
-        let golden_cox: Vec<Vec<u32>> = serde_json::from_value(g["coxetermat"].clone())
-            .unwrap_or_else(|e| panic!("{name}: failed to parse golden coxetermat: {e}"));
-        assert_eq!(cox, golden_cox, "{name}: coxeter matrix mismatch");
-        let mut degrees = degrees_of(series, rank)
-            .unwrap_or_else(|e| panic!("{name}: degrees_of({series:?}, {rank}) failed: {e}"));
-        degrees.sort_unstable();
-        let order = order_from_degrees(&degrees);
-        let golden_order = g["order"]
-            .as_u64()
-            .unwrap_or_else(|| panic!("{name}: golden \"order\" is not a u64"))
-            as u128;
-        assert_eq!(order, golden_order, "{name}: order mismatch");
-    }
-}
+// I7/I8 golden coverage arrives with CycInt (plan Task 18).
