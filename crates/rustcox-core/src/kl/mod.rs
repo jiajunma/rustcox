@@ -4,7 +4,9 @@
 //! - `table`: storage layer (polynomials, mu values, rows).
 //! - Options and validation live here.
 
+pub mod compute;
 pub mod table;
+pub use compute::klpolynomials_seq;
 pub use table::{KlRow, KlTable, MuMode};
 
 use crate::group::CoxeterGroup;
@@ -106,6 +108,9 @@ pub enum KlError {
     WeightsLen(usize, usize),
     #[error("generators {0} and {1} are conjugate (odd m) but have different weights")]
     ConjugateWeights(usize, usize),
+    /// A code path not yet implemented in the current task.
+    #[error("not yet implemented: {0}")]
+    Unimplemented(&'static str),
 }
 
 // ---------------------------------------------------------------------------
