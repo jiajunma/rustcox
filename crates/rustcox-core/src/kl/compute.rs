@@ -100,6 +100,16 @@ pub(crate) struct KlCtx<'a> {
     pub pols: &'a [Laurent],
     /// The frozen per-generator mu pools (`Stored` mode only; empty otherwise).
     pub mues: &'a [Vec<Laurent>],
+    /// Same-layer partner for the parallel driver (Task 12).
+    ///
+    /// `None` in the sequential driver (and for self-paired or first-of-pair
+    /// rows).  `Some((idx, result))` when computing the second row of a
+    /// `{min, inva[min]}` pair-unit: the only same-length cross-row dependency
+    /// is the inverse-symmetry read of row `inva[w]`, which is exactly this
+    /// partner.  Because the partner row is not yet interned in `rows`, its
+    /// freshly computed values are resolved from `result` instead.  See
+    /// [`KlCtx::partner_pol_at`].
+    pub partner: Option<(ElmIdx, &'a RowResult)>,
 }
 
 impl KlCtx<'_> {
@@ -115,6 +125,40 @@ impl KlCtx<'_> {
         } else {
             Some(&self.pols[idx as usize])
         }
+    }
+
+    /// Resolve the inverse-symmetry read `P̃_{iy, iw}` for a row whose inverse
+    /// `iw` may be the same-layer partner (parallel driver, Task 12).
+    ///
+    /// When `iw` is the partner index its row is not yet interned, so the value
+    /// is read from the partner's [`RowResult`] (a [`PolSlot::Value`]); the
+    /// branch is only taken when the entry is comparable, so an
+    /// `Incomparable` slot is a contract violation.  Otherwise (`iw` is a
+    /// completed shorter/earlier row, or the sequential driver) it falls
+    /// through to [`pol_at`].
+    #[inline]
+    pub(crate) fn inverse_sym_pol(&self, iw: ElmIdx, iy: ElmIdx) -> Laurent {
+        if let Some((pidx, presult)) = self.partner {
+            if iw == pidx {
+                // The entry lives at row `pidx`, column `iy`; the inverse
+                // symmetry identity guarantees `iy <= pidx` (same invariant the
+                // sequential `pol_at(iw, iy)` relies on).
+                debug_assert!(
+                    (iy as usize) < presult.pol.len(),
+                    "partner inverse-symmetry column iy={iy} out of partner row (len {})",
+                    presult.pol.len()
+                );
+                return match &presult.pol[iy as usize] {
+                    PolSlot::Value(p) => p.clone(),
+                    PolSlot::Incomparable => {
+                        unreachable!("partner inverse-symmetry read of incomparable entry iy={iy}")
+                    }
+                };
+            }
+        }
+        self.pol_at(iw, iy)
+            .cloned()
+            .expect("inverse-symmetry entry must be comparable")
     }
 
     /// Whether `y ≤ w` in Bruhat order, reading the completed flag matrix.
@@ -246,11 +290,9 @@ fn compute_h(w: ElmIdx, y: ElmIdx, first_desc: usize, ctx: &KlCtx<'_>, cur: &[Po
             // same row, higher index iy > y.
             return same_row_value(cur, iy);
         }
-        // shorter (or earlier) row inva[w].
-        return ctx
-            .pol_at(iw, iy)
-            .cloned()
-            .expect("inverse-symmetry entry must be comparable");
+        // Shorter/earlier row inva[w] — or, in the parallel driver, the
+        // same-layer partner (resolved from its RowResult).
+        return ctx.inverse_sym_pol(iw, iy);
     }
 
     // 3. Case I: first s with lft(y,s) > y and lft(w,s) < w.
@@ -456,34 +498,54 @@ pub fn klpolynomials_seq(group: &CoxeterGroup, opts: &KlOpts) -> Result<KlTable,
     opts.validate(group)?;
 
     let uneq = opts.weights.iter().any(|&wt| wt != 1);
+    let mut table = new_kl_table(group, opts, uneq);
+    let n = table.elms.len();
+    let n_pos = table.elms.lengths.iter().copied().max().unwrap_or(0);
+    let rank = table.elms.rank;
+
+    let mut interner = Interner::new(rank, uneq);
+
+    for w in 1..n {
+        // Build the read-only context over the completed rows + frozen pools.
+        let ctx = KlCtx {
+            elms: &table.elms,
+            n_pos,
+            lweights: &table.lweights,
+            weights: &table.weights,
+            uneq,
+            rows: &table.rows,
+            pols: &table.pols,
+            mues: &table.mues,
+            // Sequential driver: no partner — same-layer inverse rows are
+            // already interned in `rows` and read via `pol_at`.
+            partner: None,
+        };
+        let result = compute_row(w as ElmIdx, &ctx);
+
+        // Intern the row's values in descending-y order (matches PyCox pool
+        // growth).  The diagonal value (y == w) is the constant 1 = pols[0].
+        let row = interner.intern_row(&mut table.pols, &mut table.mues, result, rank);
+        table.rows.push(row);
+    }
+
+    Ok(table)
+}
+
+/// Build the empty `KlTable` and push its seeded row `0`.
+///
+/// Shared by the sequential and parallel drivers so both seed the identity row
+/// identically.  Row `0` (the identity) covers only `y == 0`; `P̃ = 1`; no mu
+/// slots.  The caller is responsible for filling rows `1..n`.
+pub(crate) fn new_kl_table(group: &CoxeterGroup, opts: &KlOpts, uneq: bool) -> KlTable {
     let mu_mode = if uneq {
         MuMode::Stored
     } else {
         MuMode::Implicit
     };
-
     let elms = ElementTable::build(group);
-    let n = elms.len();
-    let n_pos = elms.lengths.iter().copied().max().unwrap_or(0);
+    let rank = elms.rank;
     let mut table = KlTable::new_empty(elms, opts.weights.clone(), mu_mode);
-    let rank = table.elms.rank;
 
-    // Dedup map beside the pol pool.  Seeded with pols[0] = one at id 0.
-    let mut pool_index: HashMap<Laurent, u32> = HashMap::new();
-    pool_index.insert(Laurent::one(), 0);
-
-    // Dedup maps beside each mu pool (Stored mode).  Seeded with zero at id 0.
-    let mut mu_index: Vec<HashMap<Laurent, u32>> = (0..rank)
-        .map(|_| {
-            let mut m = HashMap::new();
-            if uneq {
-                m.insert(Laurent::zero(), 0);
-            }
-            m
-        })
-        .collect();
-
-    // Row 0: the identity.  Only y == 0 (itself); P̃ = 1; no mu slots.
     let row0 = if uneq {
         KlRow {
             pol: vec![0],
@@ -498,40 +560,69 @@ pub fn klpolynomials_seq(group: &CoxeterGroup, opts: &KlOpts) -> Result<KlTable,
         }
     };
     table.rows.push(row0);
+    table
+}
 
-    for w in 1..n {
-        // Build the read-only context over the completed rows + frozen pools.
-        let ctx = KlCtx {
-            elms: &table.elms,
-            n_pos,
-            lweights: &table.lweights,
-            weights: &table.weights,
-            uneq,
-            rows: &table.rows,
-            pols: &table.pols,
-            mues: &table.mues,
-        };
-        let result = compute_row(w as ElmIdx, &ctx);
+/// Deduplicating interner for the polynomial and mu pools.
+///
+/// Owns the dedup maps that sit beside `KlTable::pols` and `KlTable::mues`.
+/// Both drivers (sequential and parallel) drive interning through a single
+/// `Interner`, in `(w asc, y desc, s asc)` order, so the pools grow in PyCox's
+/// exact insertion order regardless of how rows were *computed*.
+pub(crate) struct Interner {
+    /// Dedup map beside the pol pool.  Seeded with `pols[0] = one` at id `0`.
+    pool_index: HashMap<Laurent, u32>,
+    /// Dedup maps beside each mu pool (Stored mode).  Seeded with `zero` at id
+    /// `0` when `uneq`; empty otherwise.
+    mu_index: Vec<HashMap<Laurent, u32>>,
+}
 
-        // Intern the row's values in descending-y order (matches PyCox pool
-        // growth).  The diagonal value (y == w) is the constant 1 = pols[0].
-        let row = intern_row(
-            &mut table.pols,
-            &mut pool_index,
-            &mut table.mues,
-            &mut mu_index,
-            result,
-            rank,
-        );
-        table.rows.push(row);
+impl Interner {
+    /// Construct an interner with pools seeded exactly like `KlTable::new_empty`.
+    pub(crate) fn new(rank: usize, uneq: bool) -> Self {
+        let mut pool_index: HashMap<Laurent, u32> = HashMap::new();
+        pool_index.insert(Laurent::one(), 0);
+
+        let mu_index: Vec<HashMap<Laurent, u32>> = (0..rank)
+            .map(|_| {
+                let mut m = HashMap::new();
+                if uneq {
+                    m.insert(Laurent::zero(), 0);
+                }
+                m
+            })
+            .collect();
+
+        Interner {
+            pool_index,
+            mu_index,
+        }
     }
 
-    Ok(table)
+    /// Intern a [`RowResult`] into the global pools in descending-`y` order,
+    /// returning the storage [`KlRow`].  Identical logic and order to the
+    /// previous free function — see [`intern_row_impl`].
+    pub(crate) fn intern_row(
+        &mut self,
+        pols: &mut Vec<Laurent>,
+        mues: &mut [Vec<Laurent>],
+        result: RowResult,
+        rank: usize,
+    ) -> KlRow {
+        intern_row_impl(
+            pols,
+            &mut self.pool_index,
+            mues,
+            &mut self.mu_index,
+            result,
+            rank,
+        )
+    }
 }
 
 /// Intern a [`RowResult`] into the global pools in descending-`y` order,
 /// returning the storage [`KlRow`].
-fn intern_row(
+fn intern_row_impl(
     pols: &mut Vec<Laurent>,
     pool_index: &mut HashMap<Laurent, u32>,
     mues: &mut [Vec<Laurent>],

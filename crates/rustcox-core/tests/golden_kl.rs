@@ -7,12 +7,16 @@
 mod common;
 
 use rustcox_core::group::CoxeterGroup;
-use rustcox_core::kl::{klpolynomials_seq, CellData, KlOpts};
+use rustcox_core::kl::{klpolynomials, klpolynomials_seq, CellData, KlOpts, KlTable};
 
-/// Build the group, run the sequential equal-parameter KL computation, and
-/// compare the canonical-JSON output against the golden file.  Covers the
-/// KL-polynomial keys (`elms`, `pols`, `klmat`, `mumat`) plus the Task 11 cell
-/// keys (`arrows`, `lcells`, `duflo`, `lorder`, `rcells`, `tcells`).
+/// Build the group, run a KL computation, and compare the canonical-JSON output
+/// against the golden file.  Covers the KL-polynomial keys (`elms`, `pols`,
+/// `klmat`, `mumat`) plus the Task 11 cell keys (`arrows`, `lcells`, `duflo`,
+/// `lorder`, `rcells`, `tcells`).
+///
+/// Runs against **both** drivers (Task 12): the sequential reference and the
+/// parallel driver at `threads = Some(4)`.  The parallel driver must reproduce
+/// the golden data byte-for-byte, exactly like the sequential one.
 fn check_kl_golden(name: &str) {
     let g = common::golden(name);
     let components = common::components_of(&g);
@@ -26,17 +30,33 @@ fn check_kl_golden(name: &str) {
         .map(|w| w.as_u64().expect("weight not an integer") as u32)
         .collect();
 
-    let opts = KlOpts {
-        weights,
+    // Sequential reference driver.
+    let seq_opts = KlOpts {
+        weights: weights.clone(),
         threads: None,
         layer_chunk: None,
     };
-    let table = klpolynomials_seq(&group, &opts)
+    let seq_table = klpolynomials_seq(&group, &seq_opts)
         .unwrap_or_else(|e| panic!("{name}: klpolynomials_seq failed: {e:?}"));
+    compare_table_to_golden(name, "seq", &seq_table, &g);
 
+    // Parallel driver at 4 threads — must match golden byte-for-byte too.
+    let par_opts = KlOpts {
+        weights,
+        threads: Some(4),
+        layer_chunk: None,
+    };
+    let par_table = klpolynomials(&group, &par_opts)
+        .unwrap_or_else(|e| panic!("{name}: klpolynomials (t=4) failed: {e:?}"));
+    compare_table_to_golden(name, "par(t=4)", &par_table, &g);
+}
+
+/// Compare one computed [`KlTable`] against the golden JSON, naming the driver
+/// in any failure message.
+fn compare_table_to_golden(name: &str, driver: &str, table: &KlTable, g: &serde_json::Value) {
     // Merge the KL stub and the cell data into one comparison map.
-    let mut ours = rustcox_core::io::table_json(&table);
-    let cells = CellData::from_table(&table);
+    let mut ours = rustcox_core::io::table_json(table);
+    let cells = CellData::from_table(table);
     let cells_json = rustcox_core::io::cells_json(&cells);
     let ours_obj = ours.as_object_mut().expect("table_json is an object");
     for (k, val) in cells_json.as_object().expect("cells_json is an object") {
@@ -53,13 +73,13 @@ fn check_kl_golden(name: &str) {
             assert_eq!(
                 got_rows.len(),
                 want_rows.len(),
-                "{name}:{key} length mismatch"
+                "{name}[{driver}]:{key} length mismatch"
             );
             for (i, (g_row, w_row)) in got_rows.iter().zip(want_rows.iter()).enumerate() {
-                assert_eq!(g_row, w_row, "{name}:{key}[{i}] mismatch");
+                assert_eq!(g_row, w_row, "{name}[{driver}]:{key}[{i}] mismatch");
             }
         } else {
-            assert_eq!(got, want, "{name}:{key} mismatch");
+            assert_eq!(got, want, "{name}[{driver}]:{key} mismatch");
         }
     }
 }

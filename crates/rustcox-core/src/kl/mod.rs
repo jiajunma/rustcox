@@ -7,9 +7,11 @@
 pub mod cells;
 pub mod compute;
 pub(crate) mod compute_uneq;
+pub mod parallel;
 pub mod table;
 pub use cells::CellData;
 pub use compute::klpolynomials_seq;
+pub use parallel::klpolynomials;
 pub use table::{KlRow, KlTable, MuMode};
 
 use crate::group::CoxeterGroup;
@@ -118,6 +120,9 @@ pub enum KlError {
     ConjugateWeights(usize, usize),
     #[error("at least one generator weight must be positive")]
     AllZeroWeights,
+    /// Failed to build the Rayon thread pool for the parallel driver.
+    #[error("parallel thread pool error: {0}")]
+    Parallel(String),
     /// A code path not yet implemented in the current task.
     #[error("not yet implemented: {0}")]
     Unimplemented(&'static str),

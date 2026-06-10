@@ -78,10 +78,9 @@ pub(crate) fn compute_h_uneq(
         if iw == w {
             return same_row_value(cur, iy);
         }
-        return ctx
-            .pol_at(iw, iy)
-            .cloned()
-            .expect("inverse-symmetry entry must be comparable");
+        // Shorter/earlier row inva[w] — or, in the parallel driver, the
+        // same-layer partner (resolved from its RowResult).
+        return ctx.inverse_sym_pol(iw, iy);
     }
 
     // 3. Case I.  PyCox ≈10293–10302.
@@ -262,11 +261,16 @@ pub(crate) fn compute_mu_uneq(
         // comparable and the geometric mu condition for s holds, so the
         // `mat[w][z][0]=='c'` guard is subsumed by `Some(_)`; we still need the
         // shorter-row guard `mat[z][y][0]=='c'` (`ctx.leq(y, z)`).
+        //
+        // Order note (Task 12): the in-row `row_view` mu lookup is checked
+        // **before** the cross-row `ctx.leq` / `ctx.pol_at(z, …)` reads.  Both
+        // are `continue` guards, so the order is irrelevant to the result, but
+        // gating on `row_view` first is what makes the parallel driver safe: a
+        // present mu value implies `(w, z)` comparable, hence `z` is strictly
+        // shorter than `w` (a same-layer `z` always has `row_view = None`).
+        // This guarantees no same-layer row `z` is dereferenced via `ctx`.
         for z in ((y + 1)..w).rev() {
             if elms.lft(z, s) >= z {
-                continue;
-            }
-            if !ctx.leq(y, z) {
                 continue;
             }
             let Some(Some(mu_zw)) = row_view.get(z as usize * rank + s) else {
@@ -274,6 +278,9 @@ pub(crate) fn compute_mu_uneq(
             };
             let mp = mu_zw.pos_part();
             if mp.is_zero() {
+                continue;
+            }
+            if !ctx.leq(y, z) {
                 continue;
             }
             let Some(pyz) = ctx.pol_at(z, y) else {

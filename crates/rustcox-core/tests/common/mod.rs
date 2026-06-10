@@ -1,4 +1,10 @@
 //! Shared test helpers for integration tests.
+//!
+//! Each integration test binary compiles this module independently, so a
+//! helper unused by a given binary (e.g. `parallel_eq.rs` does not read golden
+//! files) would otherwise warn as dead code.  These helpers are part of the
+//! shared test surface; allow the per-binary dead-code warning.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 
