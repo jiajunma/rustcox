@@ -591,8 +591,18 @@ fn read_slot(r: &mut Cursor<'_>) -> io::Result<SlotState> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared Laurent / cursor wire primitives (reused by relkl_save.rs)
+//
+// These are `pub(crate)` so the sibling per-rep archive format
+// (`relkl_save.rs`) can reuse the *exact* same Laurent encoding (`val i32 +
+// len u32 + coeffs i64`) and the same bounds-checked little-endian cursor,
+// rather than re-deriving them.  The on-disk `.blklog`/`.blkhdr` layout is
+// unaffected — only the visibility of these helpers changed.
+// ---------------------------------------------------------------------------
+
 /// Serialize a Laurent as `val (i32) + len (u32) + len× coeff (i64)`.
-fn write_laurent(out: &mut Vec<u8>, p: &Laurent) {
+pub(crate) fn write_laurent(out: &mut Vec<u8>, p: &Laurent) {
     out.extend_from_slice(&p.val().to_le_bytes());
     let coeffs = p.coeffs();
     out.extend_from_slice(&(coeffs.len() as u32).to_le_bytes());
@@ -601,7 +611,7 @@ fn write_laurent(out: &mut Vec<u8>, p: &Laurent) {
     }
 }
 
-fn read_laurent(r: &mut Cursor<'_>) -> io::Result<Laurent> {
+pub(crate) fn read_laurent(r: &mut Cursor<'_>) -> io::Result<Laurent> {
     let val = r.read_i32()?;
     let n = r.read_u32()? as usize;
     let mut coeffs = Vec::with_capacity(n);
@@ -611,14 +621,14 @@ fn read_laurent(r: &mut Cursor<'_>) -> io::Result<Laurent> {
     Ok(Laurent::from_coeffs(val, coeffs))
 }
 
-fn write_laurents(out: &mut Vec<u8>, pols: &[Laurent]) {
+pub(crate) fn write_laurents(out: &mut Vec<u8>, pols: &[Laurent]) {
     out.extend_from_slice(&(pols.len() as u32).to_le_bytes());
     for p in pols {
         write_laurent(out, p);
     }
 }
 
-fn read_laurents(r: &mut Cursor<'_>) -> io::Result<Vec<Laurent>> {
+pub(crate) fn read_laurents(r: &mut Cursor<'_>) -> io::Result<Vec<Laurent>> {
     let n = r.read_u32()? as usize;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
@@ -631,13 +641,13 @@ fn read_laurents(r: &mut Cursor<'_>) -> io::Result<Vec<Laurent>> {
 // Minimal little-endian cursor (no extra dependency)
 // ---------------------------------------------------------------------------
 
-struct Cursor<'a> {
-    buf: &'a [u8],
-    pos: usize,
+pub(crate) struct Cursor<'a> {
+    pub(crate) buf: &'a [u8],
+    pub(crate) pos: usize,
 }
 
 impl Cursor<'_> {
-    fn next_bytes(&mut self, n: usize) -> io::Result<&[u8]> {
+    pub(crate) fn next_bytes(&mut self, n: usize) -> io::Result<&[u8]> {
         let end = self
             .pos
             .checked_add(n)
@@ -647,21 +657,21 @@ impl Cursor<'_> {
         self.pos = end;
         Ok(slice)
     }
-    fn read_u32(&mut self) -> io::Result<u32> {
+    pub(crate) fn read_u32(&mut self) -> io::Result<u32> {
         let b = self.next_bytes(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    fn read_i32(&mut self) -> io::Result<i32> {
+    pub(crate) fn read_i32(&mut self) -> io::Result<i32> {
         let b = self.next_bytes(4)?;
         Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    fn read_u64(&mut self) -> io::Result<u64> {
+    pub(crate) fn read_u64(&mut self) -> io::Result<u64> {
         let b = self.next_bytes(8)?;
         let mut a = [0u8; 8];
         a.copy_from_slice(b);
         Ok(u64::from_le_bytes(a))
     }
-    fn read_i64(&mut self) -> io::Result<i64> {
+    pub(crate) fn read_i64(&mut self) -> io::Result<i64> {
         let b = self.next_bytes(8)?;
         let mut a = [0u8; 8];
         a.copy_from_slice(b);
@@ -669,7 +679,7 @@ impl Cursor<'_> {
     }
 }
 
-fn corrupt(msg: impl Into<String>) -> io::Error {
+pub(crate) fn corrupt(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 
