@@ -403,7 +403,18 @@ pub struct Parabolic {
 
 impl Parabolic {
     /// Build the parabolic subgroup `W_J` for generator subset `j`.
+    ///
+    /// The empty subset `j = []` yields the trivial rank-0 parabolic `W_∅`
+    /// (matching PyCox `reflectionsubgroup(W, [])`), the base of the `klcells`
+    /// recursion.
     pub fn new(w: &CoxeterGroup, j: &[Gen]) -> Result<Self, Error> {
+        if j.is_empty() {
+            return Ok(Parabolic {
+                group: CoxeterGroup::rank_zero(),
+                sub_j: Vec::new(),
+                gen_map: Vec::new(),
+            });
+        }
         let classified = classify_cartan_sub(w, j)?;
 
         // `from_components` concatenates components in the order given and

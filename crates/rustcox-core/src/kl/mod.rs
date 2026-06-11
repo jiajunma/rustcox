@@ -7,6 +7,7 @@
 pub mod cells;
 pub mod compute;
 pub(crate) mod compute_uneq;
+pub mod klcells;
 pub mod parallel;
 pub mod relkl;
 mod relkl_recur;
@@ -14,6 +15,7 @@ pub(crate) mod scc;
 pub mod table;
 pub use cells::CellData;
 pub use compute::klpolynomials_seq;
+pub use klcells::{klcells, klcells_with_tiers, CellsOpts, KlCellsResult};
 pub use parallel::klpolynomials;
 pub use relkl::{relklpols, RelKlOpts, RelKlOutput};
 pub use table::{KlRow, KlTable, MuMode};
@@ -135,6 +137,10 @@ pub enum KlError {
     /// A code path not yet implemented in the current task.
     #[error("not yet implemented: {0}")]
     Unimplemented(&'static str),
+    /// An internal invariant violation (e.g. the `klcells` induction failed to
+    /// cover `W`, or the final `Σ|cell| == |W|` check failed).
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 // ---------------------------------------------------------------------------

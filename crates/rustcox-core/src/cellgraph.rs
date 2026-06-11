@@ -542,6 +542,50 @@ impl CellGraph {
         v.sort();
         v
     }
+
+    /// Restrict this W-graph to the given vertex positions, **preserving their
+    /// given order**.
+    ///
+    /// This is the public counterpart of [`subgraph`](Self::subgraph) used by
+    /// the `klcells` size-tier pre-partition (PyCox 12236–12246): given a bucket
+    /// `l` of positions sharing a left-cell invariant (right-descent set or
+    /// generalised tau), it builds `wgraph(W, weights, [X[i] for i in l],
+    /// var, [Isets[i] for i in l], {relabelled mmat}, mpols, [Xrep[i] for i in
+    /// l])`.  `mmat` is restricted to keys with both endpoints inside `l` and
+    /// re-keyed to local positions.
+    ///
+    /// Unlike [`subgraph`](Self::subgraph) the positions are NOT sorted: they
+    /// keep their caller-supplied order, mirroring PyCox's `filter`-derived list
+    /// `l`.  The subsequent [`decompose`](Self::decompose) derives its
+    /// components from `mmat` keys, so the vertex order only affects the
+    /// within-component labelling, which is re-canonicalized downstream.
+    pub fn restrict(&self, positions: &[usize]) -> CellGraph {
+        let old_to_new: HashMap<u32, u32> = positions
+            .iter()
+            .enumerate()
+            .map(|(new, &old)| (old as u32, new as u32))
+            .collect();
+
+        let x: Vec<Word> = positions.iter().map(|&p| self.x[p].clone()).collect();
+        let xrep: Vec<CoxElm> = positions.iter().map(|&p| self.xrep[p].clone()).collect();
+        let isets: Vec<Vec<Gen>> = positions.iter().map(|&p| self.isets[p].clone()).collect();
+
+        let mut mmat: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for (&(a, b), v) in &self.mmat {
+            if let (Some(&na), Some(&nb)) = (old_to_new.get(&a), old_to_new.get(&b)) {
+                mmat.insert((na, nb), v.clone());
+            }
+        }
+
+        CellGraph {
+            x,
+            xrep,
+            isets,
+            mpols: self.mpols.clone(),
+            mmat,
+            weights: self.weights.clone(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

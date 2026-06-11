@@ -103,6 +103,30 @@ impl CoxeterGroup {
     /// contiguous block `[offset_k, offset_k + N_k)` in the global root list.
     /// Generator indices are assigned consecutively: component 0 gets generators
     /// 0..rank_0, component 1 gets rank_0..rank_0+rank_1, etc.
+    /// Build the trivial rank-0 Coxeter group (the only element is the
+    /// identity).
+    ///
+    /// This is the base of the `klcells` parabolic recursion: dropping the last
+    /// generator of a rank-1 group yields the empty parabolic `W_∅`.  PyCox's
+    /// `reflectionsubgroup(W, [])` builds exactly this group.  All
+    /// element-calculus methods degenerate sensibly: the identity perm is empty,
+    /// `word_to_perm(&[])` is the empty perm, and `coxelm_sr(&[])` is the empty
+    /// `CoxElm`.
+    pub fn rank_zero() -> Self {
+        CoxeterGroup {
+            rank: 0,
+            n_pos: 0,
+            order: 1,
+            degrees: Vec::new(),
+            coxmat: Vec::new(),
+            permgens: Vec::new(),
+            components: Vec::new(),
+            roots_int: Some(Vec::new()),
+            simple_root: Vec::new(),
+            longest: OnceLock::new(),
+        }
+    }
+
     pub fn from_components(comps: &[(Series, usize)]) -> Result<Self, Error> {
         if comps.is_empty() {
             return Err(Error::ParseError(
