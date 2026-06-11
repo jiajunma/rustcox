@@ -55,6 +55,8 @@ benefit more from parallelism.
 
 ## Memory expectations
 
+### `rustcox kl` (full KL table)
+
 Memory scales as |W|² for the pol-id matrix (u32 per pair):
 
 | Group | \|W\| | pol-id matrix | Notes |
@@ -64,7 +66,21 @@ Memory scales as |W|² for the pol-id matrix (u32 per pair):
 | H4    | 14 400 | ~415 MB       | fine on a laptop; minutes parallel |
 | D6    | 23 040 | ~1.1 GB       | HPC node |
 | E6    | 51 840 | ~5.4 GB       | fat node, experimental |
-| E7/E8 | —      | out of scope  | needs relklpols/cells induction |
+| E7/E8 | —      | out of scope  | full pol-id matrix is TB-scale; use `rustcox cells` |
+
+### `rustcox cells` (parabolic induction — Phase 2)
+
+The cells driver avoids the |W|² full-table matrix; memory is dominated by
+the relative-KL polynomial pool per star-class representative:
+
+| Group | \|W\| | Peak RSS (t=64) | Notes |
+|-------|--------|----------------|-------|
+| H4    | 14 400 | 74 MB          | XMU cluster, 2026-06-11 |
+| D6    | 23 040 | 33 MB          | XMU cluster, 2026-06-11 |
+| B6    | 46 080 | 74 MB          | XMU cluster, 2026-06-11 |
+| E6    | 51 840 | 75 MB          | XMU cluster, 2026-06-11 |
+| E7    | 2 903 040 | 6.5 GB      | XMU cluster, 2026-06-11; output `results/cells_E7.json.gz` |
+| E8    | 696 729 600 | structural limit | see below |
 
 Equal-parameter mode (`MuMode::Implicit`) does **not** allocate a mu array;
 only per-row slot-presence bitmaps. Unequal-parameter mode (`MuMode::Stored`)
@@ -100,6 +116,43 @@ Adjust `--mem` and `--time` for your cluster. H4 is the natural HPC target:
 sufficient threads. The **concrete, versioned** scripts actually used at XMU are
 `hpc/h4_determinism.sbatch` and `hpc/big_groups.sbatch` (account/partition/qos
 already filled in); the block above is a bare template.
+
+## Cells ladder (Phase 2 results, XMU cluster 2026-06-11)
+
+All runs: `rustcox cells <Group> --threads 64 -o <output>`, equal parameters,
+on one `cpu`-partition node (2× Xeon Gold 6338, 64 cores, 256 GB).
+
+| Group | \|W\| | Compute (t=64) | Wall | Peak RSS | Left cells | Star reps | Validated against |
+|-------|--------|---------------|------|----------|------------|-----------|-------------------|
+| H4    | 14 400 | 1.26 s        | —    | 74 MB    | 206        | 90        | Phase-1 archive (byte-identical) |
+| D6    | 23 040 | 0.25 s        | —    | 33 MB    | 578        | —         | PyCox full-table |
+| B6    | 46 080 | 0.88 s        | —    | 74 MB    | 752        | —         | PyCox full-table |
+| E6    | 51 840 | 0.62 s        | —    | 75 MB    | 652        | 21        | PyCox full-table |
+| **E7** | **2 903 040** | **61.1 s** | **71 s** | **6.5 GB** | **6364** | **56** | PyCox / Geck literature (~235× speedup) |
+
+E7 output is archived on-cluster at `results/cells_E7.json.gz` (10 MB).
+
+## E7 recipe
+
+```bash
+# On the XMU login node (after rsync + cargo build --release):
+sbatch hpc/cells_e7.sbatch
+# Monitor:
+squeue -u majj
+# Pull results:
+rsync -az majj@10.26.14.64:/public/home/majj/rustcox/results/ ./results/
+```
+
+The `hpc/cells_e7.sbatch` script requests 64 CPUs, 16 GB memory, and a 30-minute
+wall-clock limit (actual wall time ~71 s).  It writes `results/cells_E7.json.gz`.
+
+## E8 structural limit
+
+The `hpc/cells_e8_experiment.sbatch` script was submitted as a time-boxed
+experiment.  The expected structural failure is that the relative-KL matrix for
+large E7 cells is TB-scale — PyCox also declares E8 cells out of reach by this
+method.  The experiment outcome is recorded in the SLURM job logs under `hpc/`
+(`cells_e8_experiment-<jobid>.out`); no successful result is claimed.
 
 ## XMU cluster access
 
@@ -175,8 +228,10 @@ data.
 
 ## What NOT to attempt
 
-- **E7 / E8 full tables:** |W| = 2 903 040 / 696 729 600 — full pol-id
-  matrices are impractical. The plan (Part 5) describes relklpols and cell
-  induction for handling these groups, but that is not yet implemented.
+- **E7 / E8 full KL tables (`rustcox kl`):** |W| = 2 903 040 / 696 729 600 —
+  full pol-id matrices are TB-scale and impractical.  Use `rustcox cells`
+  instead (E7 completes in ~71 s; E8 is a known structural limit).
+- **E8 cells (`rustcox cells E8`):** the relative-KL matrix for the large E7
+  cells (needed as a sub-problem) is TB-scale; see E8 structural limit above.
 - **Unequal parameters on H4:** not blocked by code, but mu storage cost has
   not been profiled. Use caution and monitor memory.

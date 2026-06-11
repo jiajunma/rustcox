@@ -2,6 +2,8 @@
 
 ## Module map
 
+### Phase 1 — KL engine
+
 | Module | Responsibility |
 |--------|---------------|
 | `laurent` | Laurent polynomials over i64; pos/nonneg/zero/bar parts; serde |
@@ -20,6 +22,17 @@
 | `kl/scc` | Tarjan SCC (generic) |
 | `wgraph` | Minimal W-graph per cell; decompose |
 | `io` | Canonical JSON export/import (schema `rustcox-golden-v1`, gz-transparent) |
+
+### Phase 2 — Cells by parabolic induction
+
+| Module | Responsibility |
+|--------|---------------|
+| `parabolic` | Parabolic subgroups `W_J`; minimal-length left coset reps (`red_left_coset_reps`); `Parabolic` struct |
+| `star` | Star operations, star orbits (`star_orbit_right`); `generalised_tau` pre-partition |
+| `cellgraph` | `CellGraph` — W-graph over an induced cell set; `from_relkl`; `decompose`; `to_relkl` |
+| `kl/relkl` | `relklpols` — relative KL polynomials by parabolic induction (equal parameters; port of PyCox 10496–10773) |
+| `kl/relkl_recur` | Inner recursion helpers: `classify_block`, `compute_caseb_block`, `intern`, `relmue`; `Lft` enum; the five index-space types |
+| `kl/klcells` | `klcells` driver — full left-cell partition by induction; size-tier pre-partition; `celms` skip-set |
 
 ## Element representations and conventions (plan §0.3)
 
@@ -124,6 +137,83 @@ entries).
 
 **Φ_n computation** (`CycInt::phi`): port of PyCox `cyclpol`. Called only at
 construction time; n is expected to be small (≤ ~60); no memoisation.
+
+## Phase 2 — Cells by parabolic induction
+
+### Induction pipeline
+
+```
+W1 left cells   →  wgraphtoklmat   →  relklpols    →  CellGraph
+(klcells_raw)      (to_relkl)         (relkl.rs)      (from_relkl)
+                                            |
+                                            v
+                                    decompose (size tiers)
+                                            |
+                                            v
+                                  star-orbit + w0 expansion
+                                            |
+                                            v
+                                   celms skip-set test
+                                   (next star-class rep)
+```
+
+1. **`klcells_raw`** recursively computes the left-cell partition of `W1 = W_J`
+   (the rank-1 parabolic) using the full KL table.
+2. **`to_relkl`** converts each left cell of `W1` to a `RelKlInput` (the
+   `cell1` dict in PyCox notation).
+3. **`relklpols`** (`kl/relkl.rs`) computes the relative KL polynomials for the
+   induced set `X1 · C`, where `X1` is the set of minimal-length left coset
+   representatives of `W1` in `W`.  By Geck's theorem, `X1 · C` is a union of
+   left cells of `W`.
+4. **`CellGraph::from_relkl`** builds the W-graph over the induced set; **`decompose`**
+   partitions it into left cells, using a size-tier pre-partition (`generalised_tau`
+   for large induced sets, right-descent sets for medium, direct decompose for small).
+5. Each new left cell of `W` spawns its full **star orbit** (via
+   `star_orbit_right`) together with its **w0-image**, growing the known cell
+   partition of `W`.
+6. The **`celms` skip-set** (CoxElms of involutions already covered) allows
+   `klcells` to skip star-class representatives whose entire induced set is
+   already partitioned, avoiding redundant relklpols calls.
+
+The algorithm terminates when all elements of `W` have been assigned a cell
+(verified by a coverage assertion).
+
+### The five index spaces (`kl/relkl_recur.rs`)
+
+The relative-KL recursion operates in five distinct index spaces, kept
+disjoint by named type aliases and a disciplined naming convention:
+
+| Space | Meaning | Alias / var |
+|-------|---------|-------------|
+| W-generator | simple generator of `W` | `s` (`Gen`) |
+| Coset index | position in `X1` (coset reps) | `x`, `y` (`Cx`) |
+| Cell index | position in `cell1.elms` (elements of `C`) | `u`, `v` (`Cu`) |
+| Flat `ap` index | position in the induced set `X · C` | `u32` |
+| W1 element | perm of `W1` in `W1`'s own root system | `p1[u]` |
+
+The `Lft` enum encodes left-multiplication of a coset rep by a W-generator:
+- `Lft::In(x)` — `s·X1[x]` stays in `X1` at coset index `x`
+- `Lft::Out(t)` — `s·X1[x]` leaves `X1`; `t` is the W-generator index `J[t']`
+
+### Deterministic wavefront parallelisation
+
+The relative-KL wavefront (`relklpols`) is parallelised with the same
+two-phase deterministic design as the Phase-1 KL driver:
+
+1. **Phase 1 (parallel):** Rayon `par_iter` over coset-rep index `x` within
+   each `y`-layer.  Each worker computes its Case-B block with inline `Laurent`
+   values; no shared pool writes; reads only frozen lower layers.
+2. **Phase 2 (sequential):** Flatten `(x, RowResult)` pairs, sort in
+   `(x desc, v, u)` order, intern through the shared pool.
+
+This guarantees that `cells` and `star_reps` output is **byte-identical** for
+any thread count.
+
+### PyCox reference
+
+The two normative extraction notes are:
+- `docs/superpowers/plans/2026-06-11-pycox-relklpols-notes.md` — `relklpols` / `relmue`
+- `docs/superpowers/plans/2026-06-11-pycox-klcells-notes.md` — `klcells` driver
 
 ## Known deviations from PyCox
 

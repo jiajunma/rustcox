@@ -6,7 +6,7 @@ left/right/two-sided cells and Duflo involutions** for all finite Coxeter groups
 with equal *and* unequal parameters — designed for multi-threaded computation
 on HPC machines.
 
-**Status: implementation complete through Task 18 (plan tasks 0–18 done).**
+**Status: Phase 1 (tasks 0–18) + Phase 2 (tasks P1–P8) complete.**
 
 ## Quick start
 
@@ -22,6 +22,9 @@ rustcox kl B4 --summary
 
 # Write compressed golden JSON
 rustcox kl F4 -o f4.json.gz --threads 8
+
+# Cells by parabolic induction (Phase 2)
+rustcox cells E7 --threads 64 -o e7.json.gz
 
 # Full golden self-test against golden/ directory
 rustcox selftest
@@ -41,10 +44,30 @@ rustcox selftest
 | All finite types (A–H, I₂(m)) | done | I₂(m) uses CycInt for m ∉ {3,4,5,6} |
 | Canonical JSON I/O (gz-transparent) | done | schema `rustcox-golden-v1` |
 | Deterministic parallel driver | done | byte-identical to sequential |
-| CLI: info, kl, verify, selftest, bench-kl | done | |
-| relklpols / cells induction | not ported | plan Part 5 |
-| Hecke characters / chartable | not ported | plan Part 5 |
-| E7, E8 full tables | not in scope | needs relklpols; see plan §0.5 |
+| CLI: info, kl, verify, selftest, bench-kl, cells | done | |
+| relklpols (relative KL polynomials) | done | equal parameters; parabolic induction |
+| Cells by parabolic induction | done | E7-validated; 235× faster than PyCox |
+| Star operations / star orbits | done | `star.rs`; generalised tau |
+| Hecke characters / chartable | not ported | future work |
+| E8 cells | structural limit | relkl matrix for large E7 cells is TB-scale; see docs/HPC.md |
+
+## Cells at scale
+
+Cells by parabolic induction (`rustcox cells`) on the XMU cluster (64-core Intel
+node, 256 GB, 2026-06-11):
+
+| Group | \|W\| | Compute (t=64) | Wall | Peak RSS | Left cells | Star-class reps | vs PyCox |
+|-------|--------|---------------|------|----------|------------|-----------------|----------|
+| H4    | 14 400 | 1.26 s        | —    | 74 MB    | 206        | 90              | validated |
+| D6    | 23 040 | 0.25 s        | —    | 33 MB    | 578        | —               | validated |
+| B6    | 46 080 | 0.88 s        | —    | 74 MB    | 752        | —               | validated |
+| E6    | 51 840 | 0.62 s        | —    | 75 MB    | 652        | 21              | validated |
+| **E7** | **2 903 040** | **61.1 s** | **71 s** | **6.5 GB** | **6364** | **56** | **~235× faster than PyCox** |
+
+All left-cell counts and star-class representative counts match the published
+PyCox / Geck values exactly. The H4 partition is byte-identical to the Phase-1
+full-table archive. E7 output is archived on-cluster at `results/cells_E7.json.gz`
+(10 MB). E8 is a known structural limit (see [docs/HPC.md](docs/HPC.md)).
 
 ## Performance
 
@@ -81,19 +104,22 @@ python3 gen_golden.py suite        # regenerate small/medium golden files
 python3 gen_golden.py suite-big    # + A5, F4 (gzipped)
 ```
 
-The Rust test-suite (`cargo test --workspace`, 161 tests) consumes these files.
-The parallel KL driver is deterministic: its output is bit-identical to the
-sequential reference implementation across all thread counts. See
-[docs/VERIFICATION.md](docs/VERIFICATION.md) for the full pipeline.
+The Rust test-suite (`cargo test --workspace`) consumes these files.  The
+parallel KL driver is deterministic: its output is bit-identical to the
+sequential reference implementation across all thread counts.  The cells driver
+is verified by a PyCox golden suite (7 `cells_*.json` files) and a byte-level
+relkl oracle fixture.  See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the
+full pipeline.
 
 ## Repository layout
 
 | Path | Content |
 |------|---------|
-| `crates/rustcox-core/` | library: Laurent polynomials, root systems, Coxeter group calculus, KL engine |
-| `crates/rustcox-cli/` | `rustcox` binary (info, kl, verify, selftest, bench-kl) |
+| `crates/rustcox-core/` | library: Laurent polynomials, root systems, Coxeter group calculus, KL engine, cells by induction |
+| `crates/rustcox-cli/` | `rustcox` binary (info, kl, verify, selftest, bench-kl, cells) |
 | `pycox-ref/` | vendored PyCox (the oracle) + golden-data generator `gen_golden.py` |
 | `golden/` | canonical JSON golden files — **never edit by hand** |
+| `hpc/` | versioned SLURM scripts (`cells_e7.sbatch`, `cells_e8_experiment.sbatch`, …) |
 | `docs/BENCHMARKS.md` | measured timings and acceptance gates |
 | `docs/DESIGN.md` | as-built architecture and key design decisions |
 | `docs/VERIFICATION.md` | oracle pipeline and how to add golden cases |

@@ -1,7 +1,7 @@
 # rustcox — agent guide
 
 Rust rewrite of PyCox's Kazhdan–Lusztig machinery.
-**Status: implementation complete through Task 18; plan tasks 0–18 done.**
+**Status: Phase 1 (tasks 0–18) + Phase 2 (tasks P1–P8) complete.**
 
 Read this first, then the plan:
 `docs/superpowers/plans/2026-06-10-rustcox-implementation.md` (task list,
@@ -43,7 +43,8 @@ export PATH="$HOME/.cargo/bin:$PATH"   # required in every shell/session
 cargo test --workspace                       # unit + golden tests
 cargo test --workspace --release -- --include-ignored   # + slow golden (A5, F4)
 cargo clippy --all-targets -- -D warnings
-cd pycox-ref && python3 gen_golden.py kl B3:2,1,1   # one-off golden file
+cd pycox-ref && python3 gen_golden.py kl B3:2,1,1   # one-off KL golden file
+cd pycox-ref && python3 gen_golden.py cells B4       # cells golden file (Phase 2)
 python3 -c "from pycox_ref import *; ..."    # interrogate the oracle (run inside pycox-ref/)
 ```
 

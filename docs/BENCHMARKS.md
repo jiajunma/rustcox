@@ -134,3 +134,32 @@ J. Algebra 107 (1987)); E6 has 17 two-sided cells — all reproduced exactly.
 Parallel speedup grows with layer width as predicted (F4 1.5× → D6 3.8× →
 H4 5.8× at 64 threads); the sequential intern phase is the remaining
 Amdahl bottleneck.
+
+## XMU HPC — `rustcox cells` (Phase 2, 2026-06-11)
+
+Cells by parabolic induction on the same 64-core node.  All runs: equal
+parameters, `--threads 64`.  SLURM scripts in `hpc/cells_medium.sbatch`,
+`hpc/cells_e7.sbatch`.
+
+| Group | \|W\| | Compute (t=64) | Wall | Peak RSS | Left cells | Star reps | Validation |
+|-------|--------|---------------|------|----------|------------|-----------|------------|
+| H4    | 14 400 | 1.26 s        | —    | 74 MB    | 206        | 90        | byte-identical to Phase-1 archive |
+| D6    | 23 040 | 0.25 s        | —    | 33 MB    | 578        | —         | matches PyCox full-table |
+| B6    | 46 080 | 0.88 s        | —    | 74 MB    | 752        | —         | matches PyCox full-table |
+| E6    | 51 840 | 0.62 s        | —    | 75 MB    | 652        | 21        | matches PyCox full-table |
+| **E7** | **2 903 040** | **61.1 s** | **71 s** | **6.5 GB** | **6364** | **56** | matches PyCox / Geck literature |
+
+**E7 headline**: PyCox needed approximately 4 hours for E7 cells; rustcox
+completes in 61.1 s of compute (71 s wall) — a ~235× speedup.  The output
+(6364 left cells, 56 star-class representatives) matches the documented PyCox
+and Geck values exactly.  Output archived on-cluster at
+`results/cells_E7.json.gz` (10 MB).
+
+**Apple-Silicon local benches** (Criterion medians, `klcells`):
+
+| Group | \|W\| | Median time |
+|-------|--------|-------------|
+| H3    |    120 | 2.1 ms      |
+| B4    |    384 | 4.4 ms      |
+| F4  (seq)  |  1 152 | 17.1 ms |
+| F4  (t=4)  |  1 152 | 14.7 ms |
