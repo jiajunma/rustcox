@@ -17,4 +17,5 @@ pub mod laurent;
 pub mod parabolic;
 pub mod ring;
 pub mod roots;
+pub mod star;
 pub mod wgraph;
