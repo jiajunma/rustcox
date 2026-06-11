@@ -418,6 +418,69 @@ pub fn cells_json_doc(group: &CoxeterGroup, res: &crate::kl::KlCellsResult) -> V
     })
 }
 
+/// Serialize a star-rep [`CellGraph`](crate::cellgraph::CellGraph) W-graph to a
+/// self-describing JSON value (Task Q1 `--save-reps`).
+///
+/// The W-graph is the mathematical payload of a `klcells` run.  This emits every
+/// field needed to reconstruct it offline:
+/// - `n`: vertex count;
+/// - `x`: vertex reduced words (each a list of generator indices);
+/// - `xrep`: each vertex's `coxelm` identity (a list of root indices);
+/// - `isets`: each vertex's left-descent set;
+/// - `weights`: generator weights (all 1 for equal parameters);
+/// - `mpols`: per-generator mu pools (`{"v":..,"c":[..]}` Laurents);
+/// - `mmat`: W-graph edges as `[[y, x], [pool_idx per generator]]` entries,
+///   sorted by `(y, x)` for a deterministic, diff-friendly image.
+pub fn cellgraph_json(cg: &crate::cellgraph::CellGraph) -> Value {
+    let x: Vec<Value> =
+        cg.x.iter()
+            .map(|w| Value::from(w.iter().map(|&s| s as u64).collect::<Vec<_>>()))
+            .collect();
+    let xrep: Vec<Value> = cg
+        .xrep
+        .iter()
+        .map(|ce| Value::from(ce.0.iter().map(|&r| r as u64).collect::<Vec<_>>()))
+        .collect();
+    let isets: Vec<Value> = cg
+        .isets
+        .iter()
+        .map(|s| Value::from(s.iter().map(|&g| g as u64).collect::<Vec<_>>()))
+        .collect();
+    let mpols: Vec<Value> = cg
+        .mpols
+        .iter()
+        .map(|pool| {
+            Value::Array(
+                pool.iter()
+                    .map(|l| serde_json::to_value(l).unwrap())
+                    .collect(),
+            )
+        })
+        .collect();
+
+    // mmat sorted by (y, x) for determinism.
+    let mut keys: Vec<(u32, u32)> = cg.mmat.keys().copied().collect();
+    keys.sort_unstable();
+    let mmat: Vec<Value> = keys
+        .iter()
+        .map(|&(y, x)| {
+            let row = &cg.mmat[&(y, x)];
+            json!([[y, x], row])
+        })
+        .collect();
+
+    json!({
+        "schema": "rustcox-wgraph-v1",
+        "n": cg.x.len(),
+        "x": x,
+        "xrep": xrep,
+        "isets": isets,
+        "weights": cg.weights,
+        "mpols": mpols,
+        "mmat": mmat,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Import: parse "type" and "weights" from golden JSON
 // ---------------------------------------------------------------------------

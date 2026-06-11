@@ -91,8 +91,32 @@ enum Commands {
         summary: bool,
 
         /// Write canonical cells JSON to FILE (gz if filename ends .gz).
+        ///
+        /// Whole-document mode: the entire partition is held in RAM and
+        /// canonicalized.  Use `--stream` for large groups (E8).
         #[arg(short = 'o', value_name = "FILE")]
         output: Option<String>,
+
+        /// Stream one JSON record per cell to FILE (JSON-lines; gz if .gz).
+        ///
+        /// Never holds all cells in RAM.  Each line is
+        /// `{"rep":i,"orbit":j,"cell":[[words]]}`.  The summary still prints at
+        /// the end.  This is the E8-scale path.
+        #[arg(long, value_name = "FILE")]
+        stream: Option<String>,
+
+        /// Checkpoint directory for resume-safety (requires --stream).
+        ///
+        /// Auto-resumes when a matching checkpoint is found: truncates the
+        /// stream to the checkpointed record count and replays from there.  A
+        /// checkpoint is written after every rep, so a SLURM kill loses at most
+        /// one rep of work.
+        #[arg(long, value_name = "DIR")]
+        checkpoint_dir: Option<String>,
+
+        /// Save star-rep W-graphs to DIR/reps/NNNNNN.json.gz (requires --stream).
+        #[arg(long, value_name = "DIR")]
+        save_reps: Option<String>,
     },
 
     /// Compare two JSON documents (gz-transparent).
@@ -179,11 +203,17 @@ fn main() {
             threads,
             summary,
             output,
+            stream,
+            checkpoint_dir,
+            save_reps,
         } => cells_run(CellsArgs {
             type_str,
             threads,
             summary,
             output,
+            stream,
+            checkpoint_dir,
+            save_reps,
         }),
 
         Commands::Verify { file, against } => match verify_run(&file, &against) {

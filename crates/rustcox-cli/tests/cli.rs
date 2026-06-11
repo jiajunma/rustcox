@@ -297,6 +297,129 @@ fn cells_export_verify() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 5d: cells B3 --stream + --checkpoint-dir + --save-reps; then re-run
+// completes instantly from the checkpoint without re-emitting records.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cells_stream_checkpoint_rerun() {
+    use std::io::Read;
+
+    let tmp = tempdir();
+    let stream = tmp.join("s.jsonl.gz");
+    let ckpt = tmp.join("ck");
+    let reps = tmp.join("reps");
+
+    // First run: stream B3 with checkpoint + reps.
+    let out = Command::new(bin())
+        .args([
+            "cells",
+            "B3",
+            "--stream",
+            stream.to_str().unwrap(),
+            "--checkpoint-dir",
+            ckpt.to_str().unwrap(),
+            "--save-reps",
+            reps.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run rustcox cells B3 --stream");
+    assert!(
+        out.status.success(),
+        "cells B3 --stream failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ncells=14"),
+        "first run summary should report ncells=14: {stdout}"
+    );
+
+    // Stream file exists with 14 JSONL records.
+    assert!(stream.exists(), "stream file must exist");
+    let count = |p: &PathBuf| -> usize {
+        let f = fs::File::open(p).unwrap();
+        let mut s = String::new();
+        flate2::read::GzDecoder::new(f)
+            .read_to_string(&mut s)
+            .unwrap();
+        s.lines().filter(|l| !l.trim().is_empty()).count()
+    };
+    assert_eq!(count(&stream), 14, "stream must hold 14 cell records");
+
+    // Reps saved under reps/reps/.
+    let reps_inner = reps.join("reps");
+    assert!(reps_inner.is_dir(), "reps dir must exist");
+    let nreps = fs::read_dir(&reps_inner).unwrap().count();
+    assert_eq!(nreps, 10, "B3 has 10 star-reps saved");
+
+    // Checkpoint exists.
+    assert!(ckpt.join("klcells.ckpt").is_file(), "checkpoint must exist");
+
+    // Second run: same args — resumes from the completed checkpoint, emits
+    // nothing new, and the stream still holds exactly 14 records.
+    let out2 = Command::new(bin())
+        .args([
+            "cells",
+            "B3",
+            "--stream",
+            stream.to_str().unwrap(),
+            "--checkpoint-dir",
+            ckpt.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to re-run rustcox cells B3 --stream");
+    assert!(
+        out2.status.success(),
+        "re-run failed: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(
+        stdout2.contains("ncells=14"),
+        "re-run summary should still report ncells=14: {stdout2}"
+    );
+    // The re-run mentions resume on stderr.
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        stderr2.contains("resumed"),
+        "re-run stderr should mention resume: {stderr2}"
+    );
+    assert_eq!(
+        count(&stream),
+        14,
+        "re-run must not duplicate records (still 14)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5e: --checkpoint-dir without --stream is an error.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cells_checkpoint_requires_stream() {
+    let tmp = tempdir();
+    let out = Command::new(bin())
+        .args([
+            "cells",
+            "B3",
+            "--checkpoint-dir",
+            tmp.join("ck").to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run rustcox cells B3 --checkpoint-dir");
+    assert!(
+        !out.status.success(),
+        "cells --checkpoint-dir without --stream should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("stream"),
+        "error should mention --stream requirement: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 6: bench-kl B3 --threads 1,2 — exit 0
 // ---------------------------------------------------------------------------
 

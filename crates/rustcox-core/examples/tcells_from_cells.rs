@@ -16,7 +16,7 @@ use std::io::Read;
 use rustcox_core::element::CoxElm;
 use rustcox_core::group::CoxeterGroup;
 
-fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+fn find(parent: &mut [usize], mut x: usize) -> usize {
     while parent[x] != x {
         parent[x] = parent[parent[x]];
         x = parent[x];
@@ -72,10 +72,15 @@ fn main() {
     for (word, ci) in &words {
         let inv: Vec<u8> = word.iter().rev().copied().collect();
         let ice = g.word_to_perm(&inv).coxelm_sr(&g.simple_root);
-        let cj = *lcell_of.get(&ice).expect("inverse element must be in some cell");
+        let cj = *lcell_of
+            .get(&ice)
+            .expect("inverse element must be in some cell");
         // w in lcell ci and w^{-1} in lcell cj  =>  ci and cj share a right
         // cell (the inverse of lcell cj), hence same two-sided cell.
-        let (a, b) = (find(&mut parent, *ci as usize), find(&mut parent, cj as usize));
+        let (a, b) = (
+            find(&mut parent, *ci as usize),
+            find(&mut parent, cj as usize),
+        );
         if a != b {
             parent[a] = b;
         }
