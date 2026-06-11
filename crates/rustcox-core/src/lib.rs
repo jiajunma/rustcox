@@ -14,6 +14,7 @@ pub mod group;
 pub mod io;
 pub mod kl;
 pub mod laurent;
+pub mod parabolic;
 pub mod ring;
 pub mod roots;
 pub mod wgraph;
