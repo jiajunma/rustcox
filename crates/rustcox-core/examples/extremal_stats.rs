@@ -33,8 +33,11 @@ use rustcox_core::{
     laurent::Laurent,
 };
 
-/// Groups this tool is permitted to run on.
-const ALLOWED: &[&str] = &["A1", "A2", "A3", "B2", "B3", "A4", "B4", "D4", "H3", "F4"];
+/// Groups this tool is permitted to run on. The last four (H4, D6, B6, E6)
+/// build full KL tables needing GBs of RAM — run those on an HPC node only.
+const ALLOWED: &[&str] = &[
+    "A1", "A2", "A3", "B2", "B3", "A4", "B4", "D4", "H3", "F4", "H4", "D6", "B6", "E6",
+];
 
 fn main() {
     let typ = std::env::args()
