@@ -12,6 +12,7 @@ pub mod cellgraph;
 pub mod element;
 pub mod enumerate;
 pub mod group;
+pub mod interval;
 pub mod io;
 pub mod kl;
 pub mod laurent;
