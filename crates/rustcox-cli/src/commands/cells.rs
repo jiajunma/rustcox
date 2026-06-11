@@ -166,7 +166,14 @@ fn run_streaming(group: &CoxeterGroup, opts: &CellsOpts, args: &CellsArgs) -> Re
             None
         };
         let flush_opt: Option<&mut FlushSink<'_>> = Some(&mut flush_fn);
-        klcells_streaming_with_flush(group, opts, &mut cell_sink, reps_opt, flush_opt, ckpt.as_ref())
+        klcells_streaming_with_flush(
+            group,
+            opts,
+            &mut cell_sink,
+            reps_opt,
+            flush_opt,
+            ckpt.as_ref(),
+        )
     };
 
     let summary = summary.with_context(|| "streaming klcells failed")?;
