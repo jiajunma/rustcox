@@ -386,7 +386,7 @@ pub fn basics_json(group: &CoxeterGroup) -> Value {
 ///
 /// Equal parameters only: `weights` is all-ones of length `rank`.
 ///
-/// [`klcells`]: crate::kl::klcells
+/// [`klcells`]: fn@crate::kl::klcells
 /// [`KlCellsResult`]: crate::kl::KlCellsResult
 pub fn cells_json_doc(group: &CoxeterGroup, res: &crate::kl::KlCellsResult) -> Value {
     let type_val = type_json(&group.components);

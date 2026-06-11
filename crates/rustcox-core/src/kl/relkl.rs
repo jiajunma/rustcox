@@ -32,16 +32,17 @@
 //!
 //! # The `lft` / `lft1` keying convention (the subtle part)
 //!
-//! [`Lft`] encodes left-multiplication of a coset rep by a W-generator:
-//! - [`Lft::In(x)`] — `s·X1[x]` stays in `X1` at coset index `x`;
-//! - [`Lft::Out(t)`] — `s·X1[x]` leaves `X1`; it equals `X1[x]·t'` for a unique
+//! `Lft` (defined in the `relkl_recur` submodule) encodes
+//! left-multiplication of a coset rep by a W-generator:
+//! - `Lft::In(x)` — `s·X1[x]` stays in `X1` at coset index `x`;
+//! - `Lft::Out(t)` — `s·X1[x]` leaves `X1`; it equals `X1[x]·t'` for a unique
 //!   W1-generator `t'`, and `t` is the **W-generator index** `J[t']` (i.e. the
 //!   *global* generator `gen_map[t']`).
 //!
 //! PyCox encodes this case as the integer `-t-1` and keys the `lft1` dictionary
 //! by `J[t]` (the W-index).  We adopt that same W-index convention: `lft1` is a
 //! `Vec` indexed by W-generator (length `W.rank`), with only the `J`-entries
-//! populated, so `lft1[t]` for a [`Lft::Out(t)`] payload works directly with no
+//! populated, so `lft1[t]` for a `Lft::Out(t)` payload works directly with no
 //! local/global conversion.  This matches the PyCox lookups `lft1[-1-sx]` and
 //! `lft1[t]` (where `t = -1-sx`) verbatim.
 

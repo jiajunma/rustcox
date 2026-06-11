@@ -1,5 +1,11 @@
 //! Full PyCox-semantics W-graphs for induced cells (Phase 2).
 //!
+//! TODO(phase-2 follow-up): this module is ~1050 lines, over the ~800-line house
+//! limit (CLAUDE.md §5). The W-graph data type, the `from_relkl`/`to_relkl` sign-
+//! flip transform, and `decompose` are cohesive but could be split into
+//! `cellgraph/mod.rs` + `cellgraph/transform.rs` + `cellgraph/decompose.rs` in a
+//! dedicated refactor commit. Deferred to keep Phase-2 review diffs reviewable.
+//!
 //! [`CellGraph`] is a **self-contained** W-graph: it owns its elements (as
 //! canonical words plus hashable `CoxElm` identities) and does not reference a
 //! full `KlTable`.  This makes it suitable for cells of groups too large to
@@ -32,7 +38,7 @@
 //! (lines 9813–9883).  The defining transform is the **sign flip**
 //! `m = −(−1)^(ℓ(y)+ℓ(x)) · pool[idx]` applied to every interned mu value, plus
 //! the generator-bijection block (lines 9868–9878).  [`CellGraph::to_relkl`]
-//! ([`wgraphtoklmat`]) is its exact inverse (`eps = −(−1)^(len X[i]+len X[j])`).
+//! (`wgraphtoklmat`) is its exact inverse (`eps = −(−1)^(len X[i]+len X[j])`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -546,7 +552,7 @@ impl CellGraph {
     /// Restrict this W-graph to the given vertex positions, **preserving their
     /// given order**.
     ///
-    /// This is the public counterpart of [`subgraph`](Self::subgraph) used by
+    /// This is the public counterpart of the private `subgraph` helper, used by
     /// the `klcells` size-tier pre-partition (PyCox 12236–12246): given a bucket
     /// `l` of positions sharing a left-cell invariant (right-descent set or
     /// generalised tau), it builds `wgraph(W, weights, [X[i] for i in l],
@@ -554,7 +560,7 @@ impl CellGraph {
     /// l])`.  `mmat` is restricted to keys with both endpoints inside `l` and
     /// re-keyed to local positions.
     ///
-    /// Unlike [`subgraph`](Self::subgraph) the positions are NOT sorted: they
+    /// Unlike the private `subgraph` helper the positions are NOT sorted: they
     /// keep their caller-supplied order, mirroring PyCox's `filter`-derived list
     /// `l`.  The subsequent [`decompose`](Self::decompose) derives its
     /// components from `mmat` keys, so the vertex order only affects the

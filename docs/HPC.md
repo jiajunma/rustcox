@@ -143,8 +143,9 @@ squeue -u majj
 rsync -az majj@10.26.14.64:/public/home/majj/rustcox/results/ ./results/
 ```
 
-The `hpc/cells_e7.sbatch` script requests 64 CPUs, 16 GB memory, and a 30-minute
-wall-clock limit (actual wall time ~71 s).  It writes `results/cells_E7.json.gz`.
+The `hpc/cells_e7.sbatch` script requests 64 CPUs, 200 GB memory, and a 12-hour
+wall-clock limit (generous headroom; actual peak RSS ~6.5 GB and wall time ~71 s).
+It writes `results/cells_E7.json.gz`.
 
 ## E8 structural limit
 
