@@ -163,3 +163,32 @@ and Geck values exactly.  Output archived on-cluster at
 | B4    |    384 | 4.4 ms      |
 | F4  (seq)  |  1 152 | 17.1 ms |
 | F4  (t=4)  |  1 152 | 14.7 ms |
+
+## Two-sided cell counts from induction data (2026-06-11)
+
+`tcells_from_cells` (examples/) derives two-sided cell counts from a
+`rustcox cells` document via union-find (right cells = inverses of left
+cells), with no KL recomputation. Verified against full-table `tcells` for
+B4 (10), F4 (11), H3 (7), and against the PyCox character-table count of
+special characters (a = b) for every group below — all exact:
+
+| Group | left cells | two-sided cells | = #special characters |
+|-------|-----------|-----------------|------------------------|
+| H4    | 206       | 13              | 13 ✓ |
+| D6    | 578       | 27              | 27 ✓ |
+| B6    | 752       | 26              | 26 ✓ |
+| E6    | 652       | 17              | 17 ✓ |
+| **E7**| **6364**  | **35**          | **35 ✓** |
+
+(For Weyl groups these equal the number of special nilpotent orbits via the
+Springer correspondence; E8's count is 46 by the same character-table
+computation, though its cell partition remains uncomputed.)
+
+## E8 experiment outcome (job 2867149)
+
+`rustcox cells E8` ran for the full 3 h time box at 64 threads and was
+cancelled by SLURM (TIMEOUT), with MaxRSS 122.5 GB of the 250 GB allocation.
+The failure mode was **time, not memory** — Bruhat/candidate sparsity keeps
+the relative-KL matrices below the worst-case estimate. A multi-day run on a
+large-memory node may be feasible; treat as an open experiment, not a
+deliverable.
