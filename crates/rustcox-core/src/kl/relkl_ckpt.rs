@@ -465,7 +465,7 @@ pub(super) fn load_and_replay(
     // Read only the header-bounded prefix of the log; anything beyond
     // `log_bytes` is a trailing partial record from a crash mid-append.
     let log_all = std::fs::read(cfg.log_path())?;
-    let bound = header.log_bytes.min(log_all.len() as u128 as u64) as usize;
+    let bound = header.log_bytes.min(log_all.len() as u64) as usize;
     let buf = &log_all[..bound];
 
     let mut r = Cursor { buf, pos: 0 };
