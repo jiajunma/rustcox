@@ -59,10 +59,14 @@ use crate::{
 
 use rayon::prelude::*;
 
+use super::relkl_ckpt::{apply_replay, load_and_replay, BlkLogWriter, LayerRecord, RelKlCkptCfg};
 use super::relkl_recur::{
     classify_block, compute_caseb_block, diag_block_mu, intern, relmue, CaseBBlock, Cu, Cx,
     LayerCtx, Lft, SlotState, XBlockKind,
 };
+
+/// The working KL matrix: present blocks `(y, x)` → an `nc×nc` slot grid.
+type Mat = HashMap<(Cx, Cx), Vec<Vec<SlotState>>>;
 
 // ---------------------------------------------------------------------------
 // Public options + output
@@ -115,6 +119,123 @@ pub struct RelKlOutput {
     pub rklpols: Vec<Laurent>,
     /// The global mu pool (`mues`), seeded `[zero, one]`.
     pub mues: Vec<Laurent>,
+    /// Cheap slot-occupancy + memory stats for this call (always collected).
+    pub stats: RelKlStats,
+}
+
+/// Cheap, always-on statistics about one [`relklpols`] call.
+///
+/// Counts the working-matrix slots by state at the end of the recursion and the
+/// peak block-memory estimate.  These feed the future sparse-encoding decision
+/// (most slots in big inductions are `absent`); the CLI surfaces them at
+/// `--summary` as `relkl_slots: absent=… zero=… nonzero=…`.
+///
+/// Definitions (over every present working block `(y, x)`, all `nc×nc` slots):
+/// - `absent`  — `'f'` slots (no entry / [`SlotState::Absent`]);
+/// - `zero`    — completed slots whose relative-KL value is zero (`'0c0'`,
+///   i.e. [`SlotState::Done`] with `rk == 0`);
+/// - `nonzero` — completed slots with a non-zero relative-KL value
+///   ([`SlotState::Done`] with `rk != 0`).
+///
+/// `peak_block_bytes` estimates the largest in-flight `mat` footprint
+/// (`present_blocks × nc² × size_of::<SlotState>()`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RelKlStats {
+    /// Count of absent (`'f'`) slots.
+    pub absent: u64,
+    /// Count of completed zero-valued slots.
+    pub zero: u64,
+    /// Count of completed non-zero-valued slots.
+    pub nonzero: u64,
+    /// Peak working-matrix memory estimate, in bytes.
+    pub peak_block_bytes: u64,
+}
+
+impl RelKlStats {
+    /// Merge another call's stats into this one (used by `klcells` aggregation):
+    /// counts add; `peak_block_bytes` is the max (peaks are not concurrent
+    /// across reps — only one relklpols runs at a time).
+    pub fn merge(&mut self, other: &RelKlStats) {
+        self.absent += other.absent;
+        self.zero += other.zero;
+        self.nonzero += other.nonzero;
+        self.peak_block_bytes = self.peak_block_bytes.max(other.peak_block_bytes);
+    }
+}
+
+/// Outcome of a resumable [`relklpols_resumable`] run.
+#[derive(Clone, Debug)]
+pub enum RelKlRunOutcome {
+    /// The whole call completed; the log files (if any) have been deleted.
+    Done(Box<RelKlOutput>),
+    /// The run stopped after completing the named layer (only via the test-only
+    /// `RelKlCkptCfg::test_stop_after_layer` hook).  The block log + header are
+    /// durable on disk so a follow-up resume continues from `last_layer + 1`.
+    Stopped { last_layer: usize },
+}
+
+/// A `(group, W1, cell1)` content fingerprint binding a block log to its rep.
+///
+/// Two runs share a relkl block log iff this string matches.  It must detect a
+/// *different rep or cell* (the task's hard requirement): it folds in the group
+/// type, the parabolic `J`, and a content hash of `cell1` (its element words,
+/// the filled-slot structure, and the mu-pool Laurents).  Thread count is
+/// excluded — the output is byte-identical across thread counts.
+pub fn relkl_fingerprint(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+
+    // Group type (series + rank per component) + order.
+    for c in &w.components {
+        format!("{}{}", c.series, c.indices.len()).hash(&mut h);
+    }
+    w.order.hash(&mut h);
+    // Parabolic generators J (W-generator indices).
+    w1.gen_map().hash(&mut h);
+
+    // cell1 content: element words.
+    for word in &cell1.elms {
+        word.hash(&mut h);
+    }
+    // cell1 filled-slot structure: (row, col, mu-indices) for each present slot.
+    for (i, row) in cell1.klmat.iter().enumerate() {
+        for (jj, slot) in row.iter().enumerate() {
+            if let Some(sd) = slot {
+                i.hash(&mut h);
+                jj.hash(&mut h);
+                sd.mu.hash(&mut h);
+            }
+        }
+    }
+    // cell1 mu pools (Laurent val + coeffs), per pool.
+    let hash_pool = |pool: &[Laurent], h: &mut std::collections::hash_map::DefaultHasher| {
+        for p in pool {
+            p.val().hash(h);
+            p.coeffs().hash(h);
+        }
+    };
+    match &cell1.mpols {
+        MuPools::PerGen(pools) => {
+            "pergen".hash(&mut h);
+            for pool in pools {
+                hash_pool(pool, &mut h);
+            }
+        }
+        MuPools::Global(pool) => {
+            "global".hash(&mut h);
+            hash_pool(pool, &mut h);
+        }
+    }
+
+    let mut s = String::from("rustcox-relkl-v1|");
+    for (k, c) in w.components.iter().enumerate() {
+        if k > 0 {
+            s.push('x');
+        }
+        s.push_str(&format!("{}{}", c.series, c.indices.len()));
+    }
+    s.push_str(&format!("|nc={}|h={:016x}", cell1.elms.len(), h.finish()));
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -140,22 +261,67 @@ pub fn relklpols(
     cell1: &RelKlInput,
     opts: &RelKlOpts,
 ) -> RelKlOutput {
+    // No checkpointing: run to completion.  `Done` is the only possible outcome
+    // when `ckpt` is `None` (the stop hook lives on the cfg), so unwrap it.
+    match run_threaded(w, w1, cell1, opts, None) {
+        RelKlRunOutcome::Done(out) => *out,
+        RelKlRunOutcome::Stopped { .. } => {
+            unreachable!("relklpols without a checkpoint cfg cannot stop early")
+        }
+    }
+}
+
+/// Resumable [`relklpols`]: layer-granular checkpoint/resume (Task Q4).
+///
+/// Behaves exactly like [`relklpols`] but, when `ckpt` is `Some`, logs each
+/// completed wavefront layer to `dir/<rep_tag>.blklog` (+ `.blkhdr`) so a call
+/// that exceeds its time box can be paused and resumed.  On entry, if a valid
+/// matching log exists, the wavefront replays it and continues at the next
+/// uncomputed layer; on clean completion the log files are deleted (bounded
+/// disk: only the in-flight rep keeps a log).
+///
+/// Returns [`RelKlRunOutcome::Done`] with the full output on completion, or
+/// [`RelKlRunOutcome::Stopped`] when the test-only
+/// [`RelKlCkptCfg::test_stop_after_layer`] hook fires.
+///
+/// A fingerprint mismatch or a corrupt/truncated log is non-fatal: the run logs
+/// a warning to stderr, deletes the stale files, and starts fresh.  The output
+/// is **byte-identical** to an uninterrupted [`relklpols`] call regardless of
+/// how many times the run was interrupted and resumed.
+pub fn relklpols_resumable(
+    w: &CoxeterGroup,
+    w1: &Parabolic,
+    cell1: &RelKlInput,
+    opts: &RelKlOpts,
+    ckpt: Option<&RelKlCkptCfg>,
+) -> RelKlRunOutcome {
+    run_threaded(w, w1, cell1, opts, ckpt)
+}
+
+/// Apply the thread-pool convention, then run the (optionally resumable) body.
+fn run_threaded(
+    w: &CoxeterGroup,
+    w1: &Parabolic,
+    cell1: &RelKlInput,
+    opts: &RelKlOpts,
+    ckpt: Option<&RelKlCkptCfg>,
+) -> RelKlRunOutcome {
     // Threading convention (matches the Phase-1 KL driver): Some(0|1) runs the
     // recursion directly (no pool); Some(t>1) installs a private t-thread pool;
     // None uses the ambient/global pool.  Determinism is independent of this
     // choice — only `bruhatX` and the per-layer Case-B compute use the pool.
     match opts.threads {
-        Some(0) | Some(1) => relklpols_inner(w, w1, cell1),
+        Some(0) | Some(1) => relklpols_inner(w, w1, cell1, ckpt),
         Some(t) => {
             // A private pool isolates this call; if the builder fails (rare) we
             // fall back to the ambient pool rather than erroring out — the math
             // is identical either way.
             match rayon::ThreadPoolBuilder::new().num_threads(t).build() {
-                Ok(pool) => pool.install(|| relklpols_inner(w, w1, cell1)),
-                Err(_) => relklpols_inner(w, w1, cell1),
+                Ok(pool) => pool.install(|| relklpols_inner(w, w1, cell1, ckpt)),
+                Err(_) => relklpols_inner(w, w1, cell1, ckpt),
             }
         }
-        None => relklpols_inner(w, w1, cell1),
+        None => relklpols_inner(w, w1, cell1, ckpt),
     }
 }
 
@@ -165,7 +331,12 @@ pub fn relklpols(
 // parallel structures (`mat`, `bruhatX`, `bij`, the coset/cell tables), so
 // iterator rewrites would obscure the correspondence rather than clarify it.
 #[allow(clippy::needless_range_loop)]
-fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelKlOutput {
+fn relklpols_inner(
+    w: &CoxeterGroup,
+    w1: &Parabolic,
+    cell1: &RelKlInput,
+    ckpt: Option<&RelKlCkptCfg>,
+) -> RelKlRunOutcome {
     debug_assert!(
         matches!(cell1.mpols, MuPools::PerGen(_)),
         "relklpols expects cell1 in PerGen form (from CellGraph::to_relkl)"
@@ -287,42 +458,47 @@ fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelK
 
     // --- Matrix init ---------------------------------------------------------
     // mat[(y,x)] = nc×nc grid of SlotState; only (y,x) with bruhatX present.
-    // Diagonal blocks (y,y) always present.
-    let mut mues: Vec<Laurent> = vec![Laurent::zero(), Laurent::one()];
-    let mut mat: HashMap<(Cx, Cx), Vec<Vec<SlotState>>> = HashMap::new();
-
-    for y in 0..nx {
-        for x in 0..y {
-            if bx(y, x) {
-                let mut grid = vec![vec![SlotState::Absent; nc]; nc];
-                for v in 0..nc {
-                    for u in 0..nc {
-                        // PyCox: (x==y and u==v) or Lw[x]+Lw1[u] < Lw[y]+Lw1[v].
-                        // Here x<y so the first disjunct is false.
-                        if lw[x] + lw1[u] < lw[y] + lw1[v] {
-                            grid[v][u] = SlotState::Pending;
+    // Diagonal blocks (y,y) always present.  Factored into a closure so the
+    // resume path can rebuild the deterministic post-init state cheaply when a
+    // stale/corrupt log must be discarded.  Returns `(mat, mues)`.
+    let build_init = || -> (Mat, Vec<Laurent>) {
+        let mut mues: Vec<Laurent> = vec![Laurent::zero(), Laurent::one()];
+        let mut mat: Mat = HashMap::new();
+        for y in 0..nx {
+            for x in 0..y {
+                if bx(y, x) {
+                    let mut grid = vec![vec![SlotState::Absent; nc]; nc];
+                    for v in 0..nc {
+                        for u in 0..nc {
+                            // PyCox: (x==y and u==v) or Lw[x]+Lw1[u] < Lw[y]+Lw1[v].
+                            // Here x<y so the first disjunct is false.
+                            if lw[x] + lw1[u] < lw[y] + lw1[v] {
+                                grid[v][u] = SlotState::Pending;
+                            }
                         }
                     }
-                }
-                mat.insert((y, x), grid);
-            }
-        }
-        // Diagonal block (y,y): copied from cell1.
-        let mut diag = vec![vec![SlotState::Absent; nc]; nc];
-        for i in 0..nc {
-            for jj in 0..i {
-                if let Some(slot) = cell1.klmat[i][jj].as_ref() {
-                    // PyCox: mat[y,y][i][j]='c0'; then read the FIRST generator r
-                    // with a non-''/'0' slot index; intern that mu into mues.
-                    let mu_idx = diag_block_mu(slot, &cell1.mpols, &mut mues);
-                    diag[i][jj] = SlotState::Done { rk: 0, mu: mu_idx };
+                    mat.insert((y, x), grid);
                 }
             }
-            // Diagonal of diagonal: 'c1c0' → rk=1 (one), mu=0 (zero).
-            diag[i][i] = SlotState::Done { rk: 1, mu: 0 };
+            // Diagonal block (y,y): copied from cell1.
+            let mut diag = vec![vec![SlotState::Absent; nc]; nc];
+            for i in 0..nc {
+                for jj in 0..i {
+                    if let Some(slot) = cell1.klmat[i][jj].as_ref() {
+                        // PyCox: mat[y,y][i][j]='c0'; then read the FIRST generator
+                        // r with a non-''/'0' slot index; intern its mu into mues.
+                        let mu_idx = diag_block_mu(slot, &cell1.mpols, &mut mues);
+                        diag[i][jj] = SlotState::Done { rk: 0, mu: mu_idx };
+                    }
+                }
+                // Diagonal of diagonal: 'c1c0' → rk=1 (one), mu=0 (zero).
+                diag[i][i] = SlotState::Done { rk: 1, mu: 0 };
+            }
+            mat.insert((y, y), diag);
         }
-        mat.insert((y, y), diag);
-    }
+        (mat, mues)
+    };
+    let (mut mat, mut mues) = build_init();
 
     // --- Main recursion (wavefront over y; parallel over x per layer) --------
     //
@@ -339,7 +515,84 @@ fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelK
     // growth, only a `mu`).
     let mut rklpols: Vec<Laurent> = vec![Laurent::zero(), Laurent::one()];
 
-    for y in 0..nx {
+    // --- Resume: replay an existing block log, if one matches this rep --------
+    //
+    // The setup above (x1, lft, lft1, bruhat_x, the initial `mat` Pending grids,
+    // the diagonal `(y,y)` Done blocks, and the init-seeded `mues` prefix) is
+    // fully deterministic, so it is recomputed fresh on every run.  Resume then
+    // overwrites the finalized off-diagonal blocks of completed layers and
+    // re-grows the pools from the logged per-layer deltas; the wavefront
+    // continues at `start_y = last_layer + 1`.
+    let fingerprint = ckpt.map(|_cfg| relkl_fingerprint(w, w1, cell1));
+    let mut start_y: usize = 0;
+    let mut log_writer: Option<BlkLogWriter<'_>> = None;
+    let mut resumed = false;
+    if let (Some(cfg), Some(fp)) = (ckpt, fingerprint.as_ref()) {
+        // Decide whether to resume from an existing log, and reset to a clean
+        // post-init state on any failure before opening a fresh log.
+        match load_and_replay(cfg, fp) {
+            Ok(Some(state)) => match apply_replay(&state, &mut mat, &mut rklpols, &mut mues) {
+                Ok(next_y) => {
+                    start_y = next_y.min(nx);
+                    resumed = true;
+                    match BlkLogWriter::open_existing(cfg, fp, &state.header) {
+                        Ok(wr) => log_writer = Some(wr),
+                        Err(e) => {
+                            eprintln!(
+                                "relkl block log: cannot reopen '{}' for append ({e}); \
+                                 starting fresh",
+                                cfg.log_path().display()
+                            );
+                            cfg.delete_files();
+                            (mat, mues) = build_init();
+                            rklpols = vec![Laurent::zero(), Laurent::one()];
+                            start_y = 0;
+                            resumed = false;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "relkl block log: replay of '{}' failed ({e}); starting fresh",
+                        cfg.log_path().display()
+                    );
+                    cfg.delete_files();
+                    (mat, mues) = build_init();
+                    rklpols = vec![Laurent::zero(), Laurent::one()];
+                }
+            },
+            Ok(None) => {
+                // No prior log: start a fresh one.
+                cfg.delete_files();
+            }
+            Err(e) => {
+                // Corrupt / mismatched header: warn, discard, start fresh.
+                eprintln!(
+                    "relkl block log: ignoring '{}' ({e}); starting fresh",
+                    cfg.hdr_path().display()
+                );
+                cfg.delete_files();
+            }
+        }
+        if !resumed && log_writer.is_none() {
+            // Fresh log (no valid prior state to continue).
+            match BlkLogWriter::create(cfg, fp) {
+                Ok(wr) => log_writer = Some(wr),
+                Err(e) => {
+                    eprintln!(
+                        "relkl block log: cannot create '{}' ({e}); running without checkpoints",
+                        cfg.log_path().display()
+                    );
+                }
+            }
+        }
+    }
+    let every_layers = ckpt.map(|c| c.every_layers.max(1)).unwrap_or(1);
+    let stop_after = ckpt.and_then(|c| c.test_stop_after_layer);
+
+    let mut stopped_at: Option<usize> = None;
+
+    for y in start_y..nx {
         let ldy = w.left_descents(&x1[y]); // W-generators.
 
         // Descending x-list of present blocks, with each block classified.
@@ -348,6 +601,11 @@ fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelK
             .filter(|&x| bx(y, x))
             .map(|x| (x, classify_block(&ldy, &lft, x)))
             .collect();
+
+        // Pool lengths at the START of this layer; the tail appended during
+        // phase 2 is this layer's pool delta for the block log.
+        let rk_base = rklpols.len();
+        let mu_base = mues.len();
 
         // ---- Phase 1 (parallel): compute every Case-B block's inline h. -----
         // Keyed by x (descending order preserved by `par_iter` over `xs`).
@@ -436,6 +694,45 @@ fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelK
                 }
             }
         }
+
+        // ---- Layer complete: log it (finalized off-diagonal blocks + pool
+        //      deltas), respecting the `every_layers` cadence.  The final layer
+        //      `y == nx-1` is always logged so a resume after a clean wavefront
+        //      replays the whole computation if the call is re-entered.
+        if let Some(wr) = log_writer.as_mut() {
+            let is_last = y + 1 == nx;
+            if is_last || (y + 1) % every_layers == 0 {
+                let blocks: Vec<(Cx, Vec<Vec<SlotState>>)> =
+                    xs.iter().map(|&(x, _)| (x, mat[&(y, x)].clone())).collect();
+                let rec = LayerRecord {
+                    y,
+                    blocks,
+                    rklpols_delta: rklpols[rk_base..].to_vec(),
+                    mues_delta: mues[mu_base..].to_vec(),
+                };
+                if let Err(e) = wr.append_layer(&rec, rklpols.len(), mues.len()) {
+                    // A log write failure must not corrupt the math: warn, drop
+                    // the writer (run continues, just unrecoverable from here).
+                    eprintln!(
+                        "relkl block log: append for layer {y} failed ({e}); \
+                               continuing without further checkpoints"
+                    );
+                    log_writer = None;
+                }
+            }
+        }
+
+        // ---- Test-only stop hook (simulate a SLURM kill at a layer boundary).
+        if stop_after == Some(y) {
+            stopped_at = Some(y);
+            break;
+        }
+    }
+
+    // Early stop (test hook): the log + header are durable; return without
+    // building the (incomplete) output.  A follow-up resume continues the call.
+    if let Some(last_layer) = stopped_at {
+        return RelKlRunOutcome::Stopped { last_layer };
     }
 
     // --- Relabel: ap = X·C words sorted by length (stable) -------------------
@@ -521,10 +818,41 @@ fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelK
         mpols: MuPools::Global(mues.clone()),
     };
 
-    RelKlOutput {
+    // --- Stats: slot occupancy over every present working block --------------
+    // (absent vs completed-zero vs completed-nonzero) + peak block-memory.  Each
+    // present block is `nc×nc` slots; `Pending` should not survive a completed
+    // wavefront and is counted as `absent` defensively.
+    let mut stats = RelKlStats::default();
+    let mut present_blocks: u64 = 0;
+    for grid in mat.values() {
+        present_blocks += 1;
+        for row in grid {
+            for slot in row {
+                match slot {
+                    SlotState::Done { rk, .. } if *rk != 0 => stats.nonzero += 1,
+                    SlotState::Done { .. } => stats.zero += 1,
+                    _ => stats.absent += 1,
+                }
+            }
+        }
+    }
+    let slot_bytes = std::mem::size_of::<SlotState>() as u64;
+    stats.peak_block_bytes = present_blocks * (nc as u64) * (nc as u64) * slot_bytes;
+
+    // --- Clean completion: drop the block log (bounded disk) -----------------
+    // The writer is dropped first (closing the file handle), then both files are
+    // removed.  Only the in-flight rep keeps a log, so a completed call leaves no
+    // checkpoint residue behind.
+    if let Some(cfg) = ckpt {
+        drop(log_writer);
+        cfg.delete_files();
+    }
+
+    RelKlRunOutcome::Done(Box::new(RelKlOutput {
         input,
         perms: ap_perms,
         rklpols,
         mues,
-    }
+        stats,
+    }))
 }

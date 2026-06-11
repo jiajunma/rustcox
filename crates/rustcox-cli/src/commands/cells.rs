@@ -90,6 +90,11 @@ fn run_in_memory(group: &CoxeterGroup, opts: &CellsOpts, args: &CellsArgs) -> Re
             group.order,
             elapsed,
         );
+        let s = &res.relkl_stats;
+        println!(
+            "relkl_slots: absent={} zero={} nonzero={} peak_block_bytes={}",
+            s.absent, s.zero, s.nonzero, s.peak_block_bytes
+        );
     }
 
     if let Some(ref out_path) = args.output {
@@ -199,6 +204,18 @@ fn run_streaming(group: &CoxeterGroup, opts: &CellsOpts, args: &CellsArgs) -> Re
         summary.total_elements,
         elapsed,
     );
+    // Relkl slot-occupancy stats (feeds the future sparse-encoding decision).
+    let s = &summary.relkl_stats;
+    println!(
+        "relkl_slots: absent={} zero={} nonzero={} peak_block_bytes={}",
+        s.absent, s.zero, s.nonzero, s.peak_block_bytes
+    );
+    if summary.relkl_inner_resumes > 0 {
+        eprintln!(
+            "relkl inner-log resumes this run: {}",
+            summary.relkl_inner_resumes
+        );
+    }
 
     Ok(())
 }

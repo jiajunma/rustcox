@@ -30,8 +30,9 @@
 | `parabolic` | Parabolic subgroups `W_J`; minimal-length left coset reps (`red_left_coset_reps`); `Parabolic` struct |
 | `star` | Star operations, star orbits (`star_orbit_right`); `generalised_tau` pre-partition |
 | `cellgraph` | `CellGraph` — W-graph over an induced cell set; `from_relkl`; `decompose`; `to_relkl` |
-| `kl/relkl` | `relklpols` — relative KL polynomials by parabolic induction (equal parameters; port of PyCox 10496–10773) |
+| `kl/relkl` | `relklpols` / `relklpols_resumable` — relative KL polynomials by parabolic induction (equal parameters; port of PyCox 10496–10773); `RelKlStats` slot-occupancy stats |
 | `kl/relkl_recur` | Inner recursion helpers: `classify_block`, `compute_caseb_block`, `intern`, `relmue`; `Lft` enum; the five index-space types |
+| `kl/relkl_ckpt` | Layer-granular checkpoint/resume for `relklpols` (Task Q4): per-rep block log + side header, replay |
 | `kl/klcells` | `klcells` driver — full left-cell partition by induction; size-tier pre-partition; `celms` skip-set |
 
 ## Element representations and conventions (plan §0.3)
@@ -208,6 +209,38 @@ two-phase deterministic design as the Phase-1 KL driver:
 
 This guarantees that `cells` and `star_reps` output is **byte-identical** for
 any thread count.
+
+### Layer-granular checkpoint inside `relklpols` (Task Q4)
+
+A single `relklpols` call for a monster E8 induction step can exceed one SLURM
+box.  `kl/relkl_ckpt` lets such a call be paused and resumed at a wavefront-layer
+boundary.  Because each completed layer's blocks are immutable and the pools only
+grow (two-phase intern above), after each layer the resumable entry
+`relklpols_resumable` appends to a per-rep **block log**:
+
+- the layer's finalized **off-diagonal** blocks (the diagonal `(y,y)` block and
+  the initial Pending grids are recomputed deterministically on resume, so they
+  are not logged), and
+- the **pool deltas** — entries appended to `rklpols`/`mues` during the layer.
+
+A tiny side header (atomically rewritten after each record is durable) records a
+`(group, W1, cell1)` content fingerprint, the last completed layer, the record
+count, the log byte length, and the post-layer pool sizes.  On resume the
+deterministic setup runs fresh, the log replays up to the header byte length
+(ignoring any trailing partial record from a crash mid-append), the pool sizes
+are checked, and the wavefront continues at `last_layer + 1`.  The output is
+byte-identical to an uninterrupted run.
+
+`klcells` wires this only in streaming + checkpoint mode: the inner call for rep
+`i` logs to `<ckpt_dir>/relkl/repNNNNNN.{blklog,blkhdr}`, deleted on the rep's
+clean completion; stale logs for reps `< next_rep` are removed on driver resume.
+The driver checkpoint format and fingerprint are untouched (additive files only).
+
+`RelKlStats` (always-on) counts the working-matrix slots by state
+(`absent`/`zero`/`nonzero`) plus a peak block-memory estimate; `klcells`
+aggregates them and the CLI prints `relkl_slots: …`.  In practice most slots are
+`zero` or `absent` (e.g. B5: 7982 absent + 19502 zero + 3701 nonzero), which
+motivates a future sparse encoding.
 
 ### PyCox reference
 
