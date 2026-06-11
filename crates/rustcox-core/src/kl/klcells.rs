@@ -286,12 +286,18 @@ fn klcells_raw(
     // all_cells=true the union must be exactly W.  Full check is affordable up
     // to ~2M elements; above that we rely on the Σ == |W| + per-orbit
     // involution invariants (E7-scale memory note).
+    //
+    // This is a debug-only sanity check: it is wrapped in `cfg(debug_assertions)`
+    // so release builds never pay for the (up to ~2M-entry) `HashSet`.  Release
+    // correctness rests on the always-on `Σ == |W|` gate above plus the golden /
+    // full-table cross-checks in the test suite.
+    #[cfg(debug_assertions)]
     if all_cells && order <= 2_000_000 {
         let mut seen: HashSet<CoxElm> = HashSet::with_capacity(sum);
         for cell in &nc {
             for w in cell {
                 let ce = g.word_to_coxelm(w);
-                debug_assert!(
+                assert!(
                     seen.insert(ce),
                     "klcells: duplicate element {w:?} across cells (rank {})",
                     g.rank
@@ -368,9 +374,11 @@ fn decompose_tiered(
     };
 
     // Group vertex positions by key, then restrict + decompose + concat.
-    // Order of buckets is irrelevant (the final cell list is canonicalized).
-    let mut buckets: std::collections::HashMap<Vec<Gen>, Vec<usize>> =
-        std::collections::HashMap::new();
+    // BTreeMap (not HashMap): bucket iteration order is deterministic, so the
+    // concatenated `ind` order — and hence which star-orbit member is recorded
+    // into `cr1`/`star_reps` — is reproducible across runs.
+    let mut buckets: std::collections::BTreeMap<Vec<Gen>, Vec<usize>> =
+        std::collections::BTreeMap::new();
     for (pos, k) in keys.iter().enumerate() {
         buckets.entry(k.clone()).or_default().push(pos);
     }
