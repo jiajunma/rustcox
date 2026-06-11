@@ -372,6 +372,53 @@ pub fn basics_json(group: &CoxeterGroup) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Cells golden document (Task P6 — klcells parabolic-induction left cells)
+// ---------------------------------------------------------------------------
+
+/// Build the canonical `kind: "cells"` golden document for a [`KlCellsResult`].
+///
+/// Mirrors `gen_golden.py`'s `gen_cells` exactly: keys `schema`, `kind`,
+/// `type`, `weights`, `rank`, `order`, `N`, `ncells`, `nstarreps`, `cells`.
+/// `cells` is the already-canonicalized partition from [`klcells`] (each word a
+/// canonical reduced word, each cell sorted by `(len, lex)`, the cell list
+/// sorted lexicographically), so it is emitted verbatim — `verify` can compare
+/// the output byte-for-byte against the `cells_*` goldens.
+///
+/// Equal parameters only: `weights` is all-ones of length `rank`.
+///
+/// [`klcells`]: crate::kl::klcells
+/// [`KlCellsResult`]: crate::kl::KlCellsResult
+pub fn cells_json_doc(group: &CoxeterGroup, res: &crate::kl::KlCellsResult) -> Value {
+    let type_val = type_json(&group.components);
+
+    // cells: nested arrays of words (each word a list of generator indices).
+    let cells: Vec<Value> = res
+        .cells
+        .iter()
+        .map(|cell| {
+            Value::Array(
+                cell.iter()
+                    .map(|w| Value::from(w.iter().map(|&s| s as u64).collect::<Vec<_>>()))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    json!({
+        "schema": "rustcox-golden-v1",
+        "kind": "cells",
+        "type": type_val,
+        "weights": vec![1u64; group.rank],
+        "rank": group.rank,
+        "order": group.order as u64,
+        "N": group.n_pos,
+        "ncells": res.cells.len(),
+        "nstarreps": res.n_star_reps,
+        "cells": cells,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Import: parse "type" and "weights" from golden JSON
 // ---------------------------------------------------------------------------
 

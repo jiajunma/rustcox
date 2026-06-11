@@ -16,7 +16,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rustcox_core::{
     group::CoxeterGroup,
-    kl::{klpolynomials, klpolynomials_seq, CellData, KlOpts},
+    kl::{klcells, klpolynomials, klpolynomials_seq, CellData, CellsOpts, KlOpts},
 };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +136,52 @@ fn bench_cells(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// klcells benches: B4, H3, F4 (sequential) + F4 on 4 threads (Task P6)
+// ---------------------------------------------------------------------------
+
+/// Benchmark the parabolic-induction `klcells` driver.  `threads = Some(1)` is
+/// the sequential relative-KL wavefront; `cells_F4_t4` exercises the parallel
+/// wavefront (4 threads) to show the speedup on the largest local group.
+fn bench_klcells(c: &mut Criterion) {
+    let mut group = c.benchmark_group("klcells");
+    group.sample_size(10);
+
+    let seq = |threads: Option<usize>| CellsOpts {
+        all_cells: true,
+        threads,
+    };
+
+    // B4 |W| = 384 (sequential).
+    {
+        let g = CoxeterGroup::from_type("B4").expect("B4");
+        group.bench_function("cells_B4", |b| {
+            b.iter(|| klcells(&g, &seq(Some(1))).expect("B4 cells"))
+        });
+    }
+
+    // H3 |W| = 120 (sequential).
+    {
+        let g = CoxeterGroup::from_type("H3").expect("H3");
+        group.bench_function("cells_H3", |b| {
+            b.iter(|| klcells(&g, &seq(Some(1))).expect("H3 cells"))
+        });
+    }
+
+    // F4 |W| = 1152 (sequential), and the 4-thread parallel wavefront.
+    {
+        let g = CoxeterGroup::from_type("F4").expect("F4");
+        group.bench_function("cells_F4", |b| {
+            b.iter(|| klcells(&g, &seq(Some(1))).expect("F4 cells seq"))
+        });
+        group.bench_function("cells_F4_t4", |b| {
+            b.iter(|| klcells(&g, &seq(Some(4))).expect("F4 cells t4"))
+        });
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion entry points
 // ---------------------------------------------------------------------------
 
@@ -145,5 +191,6 @@ criterion_group!(
     bench_kl_par,
     bench_kl_uneq,
     bench_cells,
+    bench_klcells,
 );
 criterion_main!(benches);

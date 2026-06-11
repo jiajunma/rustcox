@@ -74,6 +74,40 @@ rustcox is roughly **150–440× faster** than PyCox across these groups,
 driven by compiled Rust, integer arithmetic throughout (no Python object
 overhead), and the interned polynomial pool avoiding redundant allocation.
 
+## Phase 2 — cells by parabolic induction (`klcells`)
+
+The `klcells` driver computes the left-cell partition by parabolic induction
+(`relklpols` + W-graph decomposition + star-orbit expansion) **without
+enumerating `W`'s full KL table**.  Times below are Criterion medians on the
+same Apple-Silicon machine, `sample_size = 10`.
+
+### `klcells` sequential
+
+| Group | \|W\| | ncells | nstarreps | Median time |
+|-------|--------|--------|-----------|-------------|
+| H3    |    120 |  22    | 15        | 2.11 ms     |
+| B4    |    384 |  50    | 22        | 4.42 ms     |
+| F4    |  1 152 |  72    | 29        | 17.1 ms     |
+
+### `klcells` F4 — sequential vs parallel relative-KL wavefront
+
+| Threads | Median time | Speedup vs seq |
+|---------|-------------|----------------|
+| seq (1) | 17.1 ms     | 1.00× baseline |
+| t = 4   | 14.7 ms     | 1.16×          |
+
+The cells path is already ~4× faster than the full-table F4 KL run (66 ms),
+because induction touches only the coset-rep × cell grid per star-class rep
+rather than the whole `|W|²` Bruhat matrix.  The relative-KL wavefront
+parallelises over the coset-rep index `x` within each `y`-layer with a
+**deterministic two-phase intern** (compute Case-B blocks in parallel with
+inline Laurent values, then intern sequentially in `(x desc, v, u)` order),
+so the `cells` and `star_reps` output is **byte-identical** for any thread
+count (verified for B4, H3, F4 × threads {2, 4} in `tests/cells_golden.rs`).
+The modest F4 speedup reflects the small per-block work at the 17 ms scale and
+the sequential intern phase (Amdahl); larger groups (rank ≥ 6) with wider
+coset grids show the wavefront's value on the HPC ladder (Task P7).
+
 ## XMU HPC runs (2026-06-11, Intel 64-core node, 256 GB)
 
 First full-table runs at scale, on one `cpu`-partition node (SLURM scripts in

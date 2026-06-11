@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use rustcox_core::{
-    io::{basics_json, group_from_type_json, to_canonical_json, weights_from_json},
-    kl::{cells::CellData, klpolynomials, KlOpts},
+    io::{basics_json, cells_json_doc, group_from_type_json, to_canonical_json, weights_from_json},
+    kl::{cells::CellData, klcells, klpolynomials, CellsOpts, KlOpts},
 };
 use serde_json::Value;
 
@@ -129,8 +129,36 @@ fn run_basics_one(doc: &Value) -> OneResult {
     }
 }
 
-/// Collect all `kl_*.json`, `kl_*.json.gz`, `basics_*.json`, `basics_*.json.gz`
-/// files in the given directory, sorted by filename.
+/// Recompute a `kind: "cells"` golden via `klcells` and compare the canonical
+/// document byte-for-byte (covers `cells`, `ncells`, and `nstarreps`).
+fn run_cells_one(doc: &Value) -> OneResult {
+    let type_val = match doc.get("type") {
+        Some(v) => v,
+        None => return OneResult::Fail("missing 'type' field".to_string()),
+    };
+
+    let group = match group_from_type_json(type_val) {
+        Ok(g) => g,
+        Err(e) => return OneResult::Fail(format!("group construction: {e}")),
+    };
+
+    let res = match klcells(&group, &CellsOpts::default()) {
+        Ok(r) => r,
+        Err(e) => return OneResult::Fail(format!("klcells: {e}")),
+    };
+
+    let computed = cells_json_doc(&group, &res);
+
+    if computed == *doc {
+        OneResult::Pass
+    } else {
+        let diff = find_first_kl_diff(&computed, doc);
+        OneResult::Fail(format!("mismatch: {diff}"))
+    }
+}
+
+/// Collect all `kl_*`, `basics_*`, and `cells_*` golden files (`.json` or
+/// `.json.gz`) in the given directory, sorted by filename.
 fn collect_golden_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("cannot read golden directory '{}'", dir.display()))?
@@ -138,7 +166,7 @@ fn collect_golden_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .map(|e| e.path())
         .filter(|p| {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            (name.starts_with("kl_") || name.starts_with("basics_"))
+            (name.starts_with("kl_") || name.starts_with("basics_") || name.starts_with("cells_"))
                 && (name.ends_with(".json") || name.ends_with(".json.gz"))
         })
         .collect();
@@ -156,6 +184,7 @@ fn run_one_from_value(doc: &Value) -> OneResult {
     match kind.as_str() {
         "kl" => run_kl_one(doc),
         "basics" => run_basics_one(doc),
+        "cells" => run_cells_one(doc),
         other => OneResult::Fail(format!("unknown kind '{other}' in golden file")),
     }
 }

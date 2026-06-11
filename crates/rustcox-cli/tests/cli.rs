@@ -211,6 +211,89 @@ fn selftest_passes() {
             "selftest output missing '{needle}': {stdout}"
         );
     }
+    // The Phase-2 cells goldens (kind: "cells") must be present and passing.
+    for needle in [
+        "PASS  cells_B3",
+        "PASS  cells_B4",
+        "PASS  cells_F4",
+        "PASS  cells_H3",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "selftest output missing cells golden '{needle}': {stdout}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 5b: cells F4 --summary — stdout contains ncells=72, nstarreps=29
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cells_summary_f4() {
+    let out = Command::new(bin())
+        .args(["cells", "F4", "--summary"])
+        .output()
+        .expect("failed to run rustcox cells F4 --summary");
+
+    assert!(
+        out.status.success(),
+        "cells F4 --summary failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ncells=72"),
+        "stdout should contain 'ncells=72': {stdout}"
+    );
+    assert!(
+        stdout.contains("nstarreps=29"),
+        "stdout should contain 'nstarreps=29': {stdout}"
+    );
+    assert!(
+        stdout.contains("order=1152"),
+        "stdout should contain 'order=1152': {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5c: cells B3 -o tmp; verify against golden/cells_B3.json — exit 0
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cells_export_verify() {
+    let tmp = tempdir();
+
+    // Compute and export the B3 cells document.
+    let b3_path = tmp.join("cells_b3.json");
+    let out = Command::new(bin())
+        .args(["cells", "B3", "-o", b3_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run rustcox cells B3 -o");
+    assert!(
+        out.status.success(),
+        "cells B3 export failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(b3_path.exists(), "cells_b3.json should have been created");
+
+    // Verify against the golden cells file — must match byte-for-byte (exit 0).
+    let golden_b3 = golden_dir().join("cells_B3.json");
+    let out = Command::new(bin())
+        .args([
+            "verify",
+            b3_path.to_str().unwrap(),
+            "--against",
+            golden_b3.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run verify on cells");
+    assert!(
+        out.status.success(),
+        "verify cells B3 against golden should exit 0: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // ---------------------------------------------------------------------------

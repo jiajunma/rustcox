@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 
 use commands::{
     bench::{run as bench_run, BenchArgs},
+    cells::{run as cells_run, CellsArgs},
     info::run as info_run,
     kl::{run as kl_run, KlArgs, WeightSpec},
     selftest::run as selftest_run,
@@ -66,6 +67,32 @@ enum Commands {
         /// Use the sequential reference driver instead of the parallel one.
         #[arg(long)]
         seq: bool,
+    },
+
+    /// Compute the left-cell partition by parabolic induction (klcells).
+    ///
+    /// Equal parameters only.  Prints a one-line summary and/or writes a
+    /// canonical `kind: "cells"` JSON document (golden `cells_*` format) for
+    /// `verify`.
+    Cells {
+        /// Coxeter group type string, e.g. "B4", "F4", "H3".
+        #[arg(name = "TYPE")]
+        type_str: String,
+
+        /// Number of threads for the relative-KL wavefront.  The partition is
+        /// identical for any value; only wall time changes.
+        #[arg(long, value_name = "N")]
+        threads: Option<usize>,
+
+        /// Print a one-line summary `ncells=<n> nstarreps=<n> order=<n> time=<s>`.
+        ///
+        /// The `time` field is always last and is NOT stable for scripting.
+        #[arg(long)]
+        summary: bool,
+
+        /// Write canonical cells JSON to FILE (gz if filename ends .gz).
+        #[arg(short = 'o', value_name = "FILE")]
+        output: Option<String>,
     },
 
     /// Compare two JSON documents (gz-transparent).
@@ -146,6 +173,18 @@ fn main() {
                 seq,
             })
         }
+
+        Commands::Cells {
+            type_str,
+            threads,
+            summary,
+            output,
+        } => cells_run(CellsArgs {
+            type_str,
+            threads,
+            summary,
+            output,
+        }),
 
         Commands::Verify { file, against } => match verify_run(&file, &against) {
             Ok(true) => std::process::exit(0),
