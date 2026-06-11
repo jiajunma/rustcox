@@ -2,12 +2,12 @@
 #SBATCH --job-name=rustcox-cells-e8
 #SBATCH --partition=cpu
 #SBATCH --account=yushilingroup
-#SBATCH --qos=normal
+#SBATCH --qos=long
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=250G
-#SBATCH --time=7-00:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --output=results/%x-%j.out
 #
 # ===========================================================================
