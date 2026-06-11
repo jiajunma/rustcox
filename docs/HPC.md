@@ -80,7 +80,7 @@ the relative-KL polynomial pool per star-class representative:
 | B6    | 46 080 | 74 MB          | XMU cluster, 2026-06-11 |
 | E6    | 51 840 | 75 MB          | XMU cluster, 2026-06-11 |
 | E7    | 2 903 040 | 6.5 GB      | XMU cluster, 2026-06-11; output `results/cells_E7.json.gz` |
-| E8    | 696 729 600 | structural limit | see below |
+| E8    | 696 729 600 | streaming long run | `cells E8 --stream` + checkpoint; see below |
 
 Equal-parameter mode (`MuMode::Implicit`) does **not** allocate a mu array;
 only per-row slot-presence bitmaps. Unequal-parameter mode (`MuMode::Stored`)
@@ -147,13 +147,39 @@ The `hpc/cells_e7.sbatch` script requests 64 CPUs, 200 GB memory, and a 12-hour
 wall-clock limit (generous headroom; actual peak RSS ~6.5 GB and wall time ~71 s).
 It writes `results/cells_E7.json.gz`.
 
-## E8 structural limit
+## E8 cells — streaming long run (Task Q1)
 
-The `hpc/cells_e8_experiment.sbatch` script was submitted as a time-boxed
-experiment.  The expected structural failure is that the relative-KL matrix for
-large E7 cells is TB-scale — PyCox also declares E8 cells out of reach by this
-method.  The experiment outcome is recorded in the SLURM job logs under `hpc/`
-(`cells_e8_experiment-<jobid>.out`); no successful result is claimed.
+E8 left cells (`|W| = 696,729,600`, expected 101796 cells / 106 star-reps) were
+historically out of reach: holding all cells in RAM and the relative-KL matrices
+for the large E7-induced cells together blow past memory.  The Task-Q1 streaming
+driver removes the RAM wall — each cell is streamed to `results/e8_cells.jsonl.gz`
+as it is found, and the compact persistent loop state (the involution skip-set
+`celms`, `tot`, the rep index, the star-rep registry, and the stream record
+count) is checkpointed after every W1-rep.
+
+Run it with `hpc/cells_e8_long.sbatch` (`--time=7-00:00:00`, `--mem=250G`):
+
+```bash
+sbatch hpc/cells_e8_long.sbatch        # first submission
+sbatch hpc/cells_e8_long.sbatch        # after a timeout — AUTO-RESUMES
+```
+
+The job is **resume-by-resubmit**: on restart the binary loads the matching
+checkpoint in `results/e8_ckpt/`, recomputes the cheap E7 recursion (~60 s) to
+rebuild the W1 star-reps, restores the loop state, truncates the stream to the
+checkpointed record count, and replays from the checkpointed rep.  A relklpols
+call is not interruptible, so a kill mid-rep simply re-runs that one rep — at
+most one rep of work is lost.  SIGTERM/SIGINT are not trapped (no `unsafe`, no
+extra crates); kill-safety rests entirely on checkpoint-after-every-rep.
+
+Storage to provision (see the header comment in the sbatch for the full
+analysis): stream ~2.5–5 GB gz, reps ≤ ~50 GB, checkpoint ~10–20 MB.
+
+The star-rep W-graphs land in `results/e8_reps/reps/NNNNNN.json.gz` — this
+W-graph data is the mathematical payload of the computation.  Final
+canonicalization of the cell stream (re-reduce + sort) is done offline/post-hoc;
+the stream's on-disk order is processing order (rep ascending, then component,
+then star-orbit), which is deterministic per the P5 BTreeMap fix.
 
 ## XMU cluster access
 
@@ -231,8 +257,10 @@ data.
 
 - **E7 / E8 full KL tables (`rustcox kl`):** |W| = 2 903 040 / 696 729 600 —
   full pol-id matrices are TB-scale and impractical.  Use `rustcox cells`
-  instead (E7 completes in ~71 s; E8 is a known structural limit).
-- **E8 cells (`rustcox cells E8`):** the relative-KL matrix for the large E7
-  cells (needed as a sub-problem) is TB-scale; see E8 structural limit above.
+  instead (E7 completes in ~71 s; E8 cells run via the streaming long-run job).
+- **E8 cells in whole-document `-o` mode (`rustcox cells E8 -o ...`):** the whole
+  partition cannot be held in RAM and canonicalized.  Use the streaming path
+  (`--stream` + `--checkpoint-dir`, `hpc/cells_e8_long.sbatch`) — see
+  *E8 cells — streaming long run* above.
 - **Unequal parameters on H4:** not blocked by code, but mu storage cost has
   not been profiled. Use caution and monitor memory.

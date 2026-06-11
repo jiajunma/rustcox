@@ -189,6 +189,13 @@ computation, though its cell partition remains uncomputed.)
 `rustcox cells E8` ran for the full 3 h time box at 64 threads and was
 cancelled by SLURM (TIMEOUT), with MaxRSS 122.5 GB of the 250 GB allocation.
 The failure mode was **time, not memory** — Bruhat/candidate sparsity keeps
-the relative-KL matrices below the worst-case estimate. A multi-day run on a
-large-memory node may be feasible; treat as an open experiment, not a
-deliverable.
+the relative-KL matrices below the worst-case estimate.
+
+**Follow-up (Task Q1):** because the blocker is wall time (not RAM), a multi-day
+run is the right shape.  The streaming/checkpoint driver
+(`rustcox cells E8 --stream ... --checkpoint-dir ...`, run by
+`hpc/cells_e8_long.sbatch` with `--time=7-00:00:00`) removes the only remaining
+RAM concern — all cells stream to disk instead of accumulating — and makes the
+run resumable across SLURM timeouts (checkpoint after every W1-rep; resubmit the
+script to auto-resume).  The long run is provisioned but its completed counts
+(expected 101796 cells / 106 star-reps) are recorded here only once it finishes.

@@ -49,7 +49,7 @@ rustcox selftest
 | Cells by parabolic induction | done | E7-validated; 235× faster than PyCox |
 | Star operations / star orbits | done | `star.rs`; generalised tau |
 | Hecke characters / chartable | not ported | future work |
-| E8 cells | structural limit | relkl matrix for large E7 cells is TB-scale; see docs/HPC.md |
+| E8 cells | streaming long run | `cells E8 --stream` + checkpoint/resume; `hpc/cells_e8_long.sbatch`; see docs/HPC.md |
 
 ## Cells at scale
 
@@ -119,7 +119,7 @@ full pipeline.
 | `crates/rustcox-cli/` | `rustcox` binary (info, kl, verify, selftest, bench-kl, cells) |
 | `pycox-ref/` | vendored PyCox (the oracle) + golden-data generator `gen_golden.py` |
 | `golden/` | canonical JSON golden files — **never edit by hand** |
-| `hpc/` | versioned SLURM scripts (`cells_e7.sbatch`, `cells_e8_experiment.sbatch`, …) |
+| `hpc/` | versioned SLURM scripts (`cells_e7.sbatch`, `cells_e8_long.sbatch`, …) |
 | `docs/BENCHMARKS.md` | measured timings and acceptance gates |
 | `docs/DESIGN.md` | as-built architecture and key design decisions |
 | `docs/VERIFICATION.md` | oracle pipeline and how to add golden cases |
