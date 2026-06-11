@@ -11,6 +11,7 @@ pub(crate) mod compute_uneq;
 pub mod klcells;
 pub mod parallel;
 pub mod relkl;
+pub mod relkl_ckpt;
 mod relkl_recur;
 pub(crate) mod scc;
 pub mod table;
@@ -18,12 +19,15 @@ pub use cells::CellData;
 pub use checkpoint::{Checkpoint, CheckpointCfg};
 pub use compute::klpolynomials_seq;
 pub use klcells::{
-    klcells, klcells_streaming, klcells_streaming_with_flush, klcells_streaming_with_tiers,
-    klcells_with_tiers, run_fingerprint, CellRecord, CellsOpts, CellsSink, FlushSink,
-    KlCellsResult, KlCellsSummary, RepsSink,
+    klcells, klcells_streaming, klcells_streaming_test_inner_stop, klcells_streaming_with_flush,
+    klcells_streaming_with_tiers, klcells_with_tiers, run_fingerprint, CellRecord, CellsOpts,
+    CellsSink, FlushSink, KlCellsResult, KlCellsSummary, RepsSink,
 };
 pub use parallel::klpolynomials;
-pub use relkl::{relklpols, RelKlOpts, RelKlOutput};
+pub use relkl::{
+    relklpols, relklpols_resumable, RelKlOpts, RelKlOutput, RelKlRunOutcome, RelKlStats,
+};
+pub use relkl_ckpt::{BlkHeader, RelKlCkptCfg, BLK_VERSION};
 pub use table::{KlRow, KlTable, MuMode};
 
 use crate::group::CoxeterGroup;

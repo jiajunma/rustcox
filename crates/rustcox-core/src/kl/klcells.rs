@@ -41,7 +41,8 @@ use crate::{
     element::{CoxElm, Gen, Perm, Word},
     group::CoxeterGroup,
     kl::checkpoint::{self, Checkpoint, CheckpointCfg},
-    kl::{relklpols, KlError, RelKlOpts},
+    kl::relkl_ckpt,
+    kl::{relklpols, relklpols_resumable, KlError, RelKlOpts, RelKlRunOutcome, RelKlStats},
     parabolic::{red_left_coset_reps, Parabolic},
     star::{generalised_tau, star_orbit_right},
 };
@@ -98,6 +99,9 @@ pub struct KlCellsResult {
     pub n_star_reps: usize,
     /// The star-class representative W-graphs (`cr1`), sorted by `|X|`.
     pub star_reps: Vec<CellGraph>,
+    /// Relkl slot-occupancy + peak-memory stats for the top-level `W`-induction
+    /// (feeds the future sparse-encoding decision; surfaced at `--summary`).
+    pub relkl_stats: RelKlStats,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +149,12 @@ pub struct KlCellsSummary {
     /// On resume, the number of records already on disk that the caller should
     /// keep (the rest are truncated and re-emitted).  `0` for a fresh run.
     pub records_kept: u128,
+    /// Aggregated relkl slot-occupancy + peak-memory stats across the reps
+    /// processed in this invocation (feeds the future sparse-encoding decision).
+    pub relkl_stats: RelKlStats,
+    /// Count of reps whose inner `relklpols` *resumed* from an existing layer
+    /// block-log (Task Q4): proves the inner log was used after a mid-rep kill.
+    pub relkl_inner_resumes: usize,
 }
 
 /// A sink that consumes one star-rep W-graph as it is discovered.
@@ -202,6 +212,7 @@ pub fn klcells_with_tiers(
         cells,
         n_star_reps: raw.star_reps.len(),
         star_reps: raw.star_reps,
+        relkl_stats: raw.relkl_stats,
     })
 }
 
@@ -289,6 +300,7 @@ pub fn klcells_streaming_with_flush<'a, 'f: 'a>(
         ckpt,
         TIER_DIRECT,
         TIER_TAU,
+        None,
     )
 }
 
@@ -304,10 +316,56 @@ pub fn klcells_streaming_with_tiers<'a, 'f: 'a>(
     tier_direct: usize,
     tier_tau: usize,
 ) -> Result<KlCellsSummary, KlError> {
-    klcells_streaming_full(g, opts, sink, reps_sink, None, ckpt, tier_direct, tier_tau)
+    klcells_streaming_full(
+        g,
+        opts,
+        sink,
+        reps_sink,
+        None,
+        ckpt,
+        tier_direct,
+        tier_tau,
+        None,
+    )
+}
+
+/// **Test-only** streaming entry that injects an inner-`relklpols` stop hook.
+///
+/// `rep_stop = (rep_index, layer)` makes the named rep's inner relkl call stop
+/// after the named wavefront layer (leaving a durable layer block-log), which
+/// the driver surfaces as an error — simulating a SLURM kill *inside* a monster
+/// rep.  On the next invocation (driver resume) the rep's inner log is found and
+/// the inner call resumes from `layer + 1`.  Used by the Q4 klcells resume test.
+#[allow(clippy::too_many_arguments)]
+pub fn klcells_streaming_test_inner_stop<'a, 'f: 'a>(
+    g: &CoxeterGroup,
+    opts: &CellsOpts,
+    sink: &'a mut CellsSink<'f>,
+    reps_sink: Option<&'a mut RepsSink<'f>>,
+    ckpt: Option<&CheckpointCfg>,
+    tier_direct: usize,
+    tier_tau: usize,
+    rep_stop: Option<(usize, usize)>,
+) -> Result<KlCellsSummary, KlError> {
+    klcells_streaming_full(
+        g,
+        opts,
+        sink,
+        reps_sink,
+        None,
+        ckpt,
+        tier_direct,
+        tier_tau,
+        rep_stop,
+    )
 }
 
 /// Internal: full-parameter streaming driver.
+///
+/// `rep_stop`, when `Some((rep_index, layer))`, makes that rep's inner
+/// `relklpols` stop after the named wavefront layer (a test-only simulated kill
+/// *inside* a monster rep — see [`klcells_streaming_test_inner_stop`]).  `None`
+/// in production.
 #[allow(clippy::too_many_arguments)]
 fn klcells_streaming_full<'a, 'f: 'a>(
     g: &CoxeterGroup,
@@ -318,6 +376,7 @@ fn klcells_streaming_full<'a, 'f: 'a>(
     ckpt: Option<&CheckpointCfg>,
     tier_direct: usize,
     tier_tau: usize,
+    rep_stop: Option<(usize, usize)>,
 ) -> Result<KlCellsSummary, KlError> {
     let all_cells = opts.all_cells;
     let threads = opts.threads;
@@ -337,6 +396,8 @@ fn klcells_streaming_full<'a, 'f: 'a>(
             total_elements: 1,
             resumed_at_rep: None,
             records_kept: 0,
+            relkl_stats: RelKlStats::default(),
+            relkl_inner_resumes: 0,
         });
     }
 
@@ -392,6 +453,7 @@ fn klcells_streaming_full<'a, 'f: 'a>(
         &mut emit,
         resume,
         ckpt_arg,
+        rep_stop,
     )?;
 
     if all_cells && state.tot != g.order {
@@ -409,6 +471,8 @@ fn klcells_streaming_full<'a, 'f: 'a>(
         total_elements: state.tot,
         resumed_at_rep,
         records_kept,
+        relkl_stats: state.relkl_stats,
+        relkl_inner_resumes: state.relkl_inner_resumes,
     })
 }
 
@@ -470,10 +534,14 @@ impl Emitter for StreamEmitter<'_, '_> {
 // ---------------------------------------------------------------------------
 
 /// Internal result of the recursion: cells as word-lists in orbit order
-/// (un-canonicalized), plus the star-rep graphs.
+/// (un-canonicalized), plus the star-rep graphs and this level's relkl stats.
 struct RawCells {
     cells: Vec<Vec<Word>>,
     star_reps: Vec<CellGraph>,
+    /// Relkl slot-occupancy + peak-memory stats for THIS level's `W`-induction
+    /// (the recursive `W1` call's stats are not folded in — they describe the
+    /// cheap parabolic, not the group of interest).
+    relkl_stats: RelKlStats,
 }
 
 /// The PyCox `klcells(W, 1, v, allcells)` recursion, equal parameters.
@@ -505,6 +573,7 @@ fn klcells_raw(
         return Ok(RawCells {
             cells: vec![vec![Vec::new()]],
             star_reps: vec![trivial],
+            relkl_stats: RelKlStats::default(),
         });
     }
 
@@ -520,7 +589,7 @@ fn klcells_raw(
 
     // --- Main induction loop, in-memory collecting emitter ------------------
     let mut emit = CollectEmitter::default();
-    run_induction(
+    let state = run_induction(
         g,
         &w1,
         &x1p,
@@ -532,10 +601,12 @@ fn klcells_raw(
         &mut emit,
         None, // fresh run (no resume)
         None, // no checkpointing in the recursive / in-memory path
+        None, // no inner-stop test hook
     )?;
 
     let nc = emit.nc;
     let cr1 = emit.cr1;
+    let relkl_stats = state.relkl_stats;
 
     // --- Final correctness check (PyCox replaces chartable; notes §) --------
     let sum: usize = nc.iter().map(|c| c.len()).sum();
@@ -578,6 +649,7 @@ fn klcells_raw(
     Ok(RawCells {
         cells: nc,
         star_reps,
+        relkl_stats,
     })
 }
 
@@ -650,6 +722,15 @@ struct LoopState {
     tot: u128,
     /// Cell records emitted so far (across all reps).
     records: u128,
+    /// Aggregated relkl slot-occupancy + peak-memory stats across all processed
+    /// reps (always collected; surfaced at `--summary`).  NOT checkpointed —
+    /// it covers only this invocation's reps (resume starts it fresh).
+    relkl_stats: RelKlStats,
+    /// Count of reps whose inner `relklpols` call *resumed* from an existing
+    /// layer block-log on entry (i.e. a prior interrupted monster rep was
+    /// continued, not recomputed from layer 0).  Used by the Q4 resume test to
+    /// prove the inner log was actually used.  NOT checkpointed.
+    relkl_inner_resumes: usize,
 }
 
 impl LoopState {
@@ -660,6 +741,8 @@ impl LoopState {
             registry: Vec::new(),
             tot: 0,
             records: 0,
+            relkl_stats: RelKlStats::default(),
+            relkl_inner_resumes: 0,
         }
     }
 }
@@ -681,6 +764,8 @@ impl Resume {
                 registry: ck.registry,
                 tot: ck.tot,
                 records: ck.records,
+                relkl_stats: RelKlStats::default(),
+                relkl_inner_resumes: 0,
             },
             next_rep,
         }
@@ -711,6 +796,7 @@ fn run_induction(
     emit: &mut dyn Emitter,
     resume: Option<Resume>,
     ckpt: Option<(&CheckpointCfg, &str)>,
+    rep_stop: Option<(usize, usize)>,
 ) -> Result<LoopState, KlError> {
     let order = g.order;
     let sr = &g.simple_root;
@@ -726,6 +812,14 @@ fn run_induction(
         Some(r) => (r.state, r.next_rep),
         None => (LoopState::fresh(), 0),
     };
+
+    // On a driver resume, the inner relkl logs for reps `< i` (already completed
+    // before the kill) are stale — delete them so only the in-flight rep `i`
+    // keeps a log.  The rep-`i` log (if present) is kept and resumes the inner
+    // call below.  Only relevant when the driver itself checkpoints (streaming).
+    if let Some(cfg) = cfg {
+        relkl_ckpt::delete_stale_rep_logs(&cfg.dir, i);
+    }
 
     while state.tot < order {
         if i >= reps.len() {
@@ -776,8 +870,48 @@ fn run_induction(
         }
 
         // rk = relklpols(W, W1, rep.to_relkl(W1.group), 1, v)
+        //
+        // In streaming + checkpoint mode (driver `cfg` set) the inner call gets a
+        // per-rep layer block-log so a monster rep that exceeds the time box can
+        // be paused/resumed at a wavefront layer (Task Q4).  The log lives at
+        // `cfg.dir/relkl/repNNNNNN.{blklog,blkhdr}`; it is deleted when the rep
+        // completes.  Driver-ckpt format and fingerprint are untouched — this is
+        // purely additive.  Without a driver checkpoint we use plain `relklpols`.
         let cell1 = rep.to_relkl(&w1.group);
-        let rk = relklpols(g, w1, &cell1, &RelKlOpts { threads });
+        let opts = RelKlOpts { threads };
+        let rk = match cfg {
+            Some(driver_cfg) => {
+                let mut rep_cfg = relkl_ckpt::rep_ckpt_cfg(&driver_cfg.dir, i, 1);
+                // Probe: a header present at entry means a prior interrupted
+                // inner run is being resumed for this rep (Q4 test signal).
+                if rep_cfg.header_exists() {
+                    state.relkl_inner_resumes += 1;
+                }
+                // Test-only: simulate a SLURM kill *inside* the inner call by
+                // stopping the named rep's wavefront after `layer`.  The first
+                // pass stops (leaving a durable inner log); the driver surfaces
+                // it as an error.  On resubmit the rep_stop is cleared and the
+                // inner log resumes the call.
+                if let Some((rep_i, layer)) = rep_stop {
+                    if rep_i == i && !rep_cfg.header_exists() {
+                        rep_cfg.test_stop_after_layer = Some(layer);
+                    }
+                }
+                match relklpols_resumable(g, w1, &cell1, &opts, Some(&rep_cfg)) {
+                    RelKlRunOutcome::Done(out) => *out,
+                    RelKlRunOutcome::Stopped { last_layer } => {
+                        // Inner call paused at a layer boundary (test kill).  The
+                        // block log is durable; abort the driver so a resubmit
+                        // resumes the inner call from `last_layer + 1`.
+                        return Err(KlError::Internal(format!(
+                            "relklpols inner stop at rep {i} layer {last_layer} (test kill)"
+                        )));
+                    }
+                }
+            }
+            None => relklpols(g, w1, &cell1, &opts),
+        };
+        state.relkl_stats.merge(&rk.stats);
 
         // Build the induced W-graph and decompose (with size tiers).
         let weights = vec![1u32; g.rank];

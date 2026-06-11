@@ -118,6 +118,16 @@ impl Laurent {
         self.coeffs.last().copied().unwrap_or(0)
     }
 
+    /// The coefficient slice in ascending-exponent order, starting at [`val`].
+    ///
+    /// Together with [`val`](Self::val) this is the full lossless content of the
+    /// polynomial: `Laurent::from_coeffs(p.val(), p.coeffs().to_vec()) == *p`.
+    /// Empty for the zero polynomial.  Used by the relkl block-log binary
+    /// serializer (Task Q4) to persist pool entries.
+    pub fn coeffs(&self) -> &[i64] {
+        &self.coeffs
+    }
+
     /// Coefficient of `v^exp`; `0` if `exp` is out of range.
     pub fn coeff(&self, exp: i32) -> i64 {
         if self.is_zero() {

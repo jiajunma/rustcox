@@ -167,13 +167,48 @@ sbatch hpc/cells_e8_long.sbatch        # after a timeout — AUTO-RESUMES
 The job is **resume-by-resubmit**: on restart the binary loads the matching
 checkpoint in `results/e8_ckpt/`, recomputes the cheap E7 recursion (~60 s) to
 rebuild the W1 star-reps, restores the loop state, truncates the stream to the
-checkpointed record count, and replays from the checkpointed rep.  A relklpols
-call is not interruptible, so a kill mid-rep simply re-runs that one rep — at
-most one rep of work is lost.  SIGTERM/SIGINT are not trapped (no `unsafe`, no
-extra crates); kill-safety rests entirely on checkpoint-after-every-rep.
+checkpointed record count, and replays from the checkpointed rep.  SIGTERM/SIGINT
+are not trapped (no `unsafe`, no extra crates); kill-safety rests on
+checkpoint-after-every-rep plus the inner layer-log below.
+
+### Layer-granular checkpoint inside `relklpols` (Task Q4)
+
+The driver-level checkpoint recovers *between* reps, but one E8 W1-rep's
+induction step can itself run for hours or days — longer than a 4-day SLURM box.
+Re-running such a monster rep from scratch on every resume would **livelock**:
+the rep never finishes inside one box, so the driver never advances.  Task Q4
+removes that wall by checkpointing *inside* the inner `relklpols` call, one
+wavefront layer at a time.
+
+When streaming + checkpointing are both on, each rep's inner call writes a
+per-rep **block log** at `results/e8_ckpt/relkl/repNNNNNN.{blklog,blkhdr}`: after
+each completed layer `y` it appends that layer's finalized off-diagonal blocks
+plus the pool deltas (new `rklpols`/`mues` entries), fsyncs the log, then
+atomically rewrites a tiny side header (version, a `(group,W1,cell1)`
+fingerprint, last completed layer, record count, log byte length, pool sizes).
+On resume the deterministic setup is recomputed fresh, the log is replayed up to
+the header's byte length (any trailing partial record from a crash mid-append is
+ignored), the pool sizes are verified, and the wavefront continues at the next
+uncomputed layer.  Output is **byte-identical** to an uninterrupted run for any
+number of interruptions and any thread count.
+
+Bounded disk: only the in-flight rep keeps a log — it is deleted on the rep's
+clean completion, and stale logs for already-completed reps (`< next_rep`) are
+removed on driver resume.  The driver checkpoint binary format and fingerprint
+are untouched (additive new files only), so the live E8 run's existing
+`results/e8_ckpt/klcells.ckpt` remains compatible.
+
+**Honest limitation:** the checkpoint granularity is one wavefront layer.  A
+single layer of a monster rep — `nx = |X1|` layers, with the last layers the
+widest — could itself take hours; if a layer alone exceeds the box, the run still
+livelocks at the layer level.  If that is ever observed, the next refinement is
+intra-layer chunk logging (log partial Case-B block progress within a layer).
+That is **not** implemented now; it is recorded here as the planned next step.
 
 Storage to provision (see the header comment in the sbatch for the full
-analysis): stream ~2.5–5 GB gz, reps ≤ ~50 GB, checkpoint ~10–20 MB.
+analysis): stream ~2.5–5 GB gz, reps ≤ ~50 GB, checkpoint ~10–20 MB, plus the
+in-flight rep's block log (one rep's blocks + pools — bounded, deleted on rep
+completion).
 
 The star-rep W-graphs land in `results/e8_reps/reps/NNNNNN.json.gz` — this
 W-graph data is the mathematical payload of the computation.  Final
