@@ -38,7 +38,8 @@ import gzip
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pycox_ref import (coxeter, klpolynomials, allwords, longestperm, v)
+from pycox_ref import (coxeter, klpolynomials, klcells, allwords,
+                       longestperm, v)
 
 GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           '..', 'golden')
@@ -243,6 +244,38 @@ def gen_kl(spec, wspec):
 
 
 # ---------------------------------------------------------------------------
+# cells golden (klcells: parabolic-induction left cells, equal parameters)
+# ---------------------------------------------------------------------------
+
+def gen_cells(spec):
+    W = make_group(spec)
+    kc = klcells(W, 1, v, pr=False)
+    nc, cr1 = kc[0], kc[1]
+    # canonicalize: each element -> canonical word; cell sorted by (len, word);
+    # cells sorted lexicographically.
+    cells = []
+    for c in nc:
+        can = sorted((W.permtoword(W.wordtoperm(w)) for w in c),
+                     key=lambda w: (len(w), w))
+        cells.append(can)
+    cells.sort()
+    total = sum(len(c) for c in cells)
+    assert total == W.order, "cells must partition W"
+    return {
+        "schema": "rustcox-golden-v1",
+        "kind": "cells",
+        "type": type_json(spec),
+        "weights": len(W.rank) * [1],
+        "rank": len(W.rank),
+        "order": W.order,
+        "N": W.N,
+        "ncells": len(cells),
+        "nstarreps": len(cr1),
+        "cells": cells,
+    }
+
+
+# ---------------------------------------------------------------------------
 # driver
 # ---------------------------------------------------------------------------
 
@@ -289,6 +322,9 @@ def main(argv):
             spec, _, wspec = a.partition(':')
             wspec = wspec or '1'
             write_json(kl_name(spec, wspec), gen_kl(spec, wspec))
+    elif mode == 'cells':
+        for spec in args:
+            write_json('cells_%s' % spec, gen_cells(spec))
     elif mode in ('suite', 'suite-big'):
         for spec in BASICS_SUITE:
             write_json('basics_%s' % spec, gen_basics(spec))
