@@ -151,12 +151,11 @@ pub fn star_orbit_right(g: &CoxeterGroup, cell: &[Perm]) -> Vec<Vec<Perm>> {
                 if g.coxmat[s][t] != 3 {
                     continue;
                 }
-                // Try both orderings: (s, t) and (t, s) — PyCox klstarorbitperm
-                // only calls klstaroperation(W, gens[s], gens[t], cell) with s > t,
-                // which gives both (s,t) and not (t,s) explicitly. However,
-                // klstaroperation is NOT symmetric in (s,t): the two calls differ.
-                // We replicate the exact PyCox loop: for each s>t, call once with
-                // (s,t). The orbit BFS will find all reachable cells.
+                // PyCox calls klstaroperation(W, gens[s], gens[t], cell) once
+                // per s>t pair; klstaroperation is not symmetric in (s,t).
+                // Replicating the exact PyCox loop: one call per s>t pair.
+                // The BFS will expand each found cell the same way, so all
+                // reachable orbit members are found.
                 let cell_i = orb[i].clone();
                 if let Some(nc) = star_op_right(g, s as Gen, t as Gen, &cell_i) {
                     let nc_first_ce = nc[0].coxelm_sr(&g.simple_root);

@@ -97,7 +97,68 @@ rustcox kl H4 --threads $SLURM_CPUS_PER_TASK -o h4.json.gz
 
 Adjust `--mem` and `--time` for your cluster. H4 is the natural HPC target:
 |W|=14 400, pol-id matrix ≈415 MB, run time estimated at a few minutes with
-sufficient threads.
+sufficient threads. The **concrete, versioned** scripts actually used at XMU are
+`hpc/h4_determinism.sbatch` and `hpc/big_groups.sbatch` (account/partition/qos
+already filled in); the block above is a bare template.
+
+## XMU cluster access
+
+The H4 / rank-6 numbers in [BENCHMARKS.md](BENCHMARKS.md) were produced on the
+Xiamen University HPC. Concrete workflow, recorded so a fresh agent can
+reproduce it without re-deriving the cluster layout.
+
+### Cluster facts
+
+- **Scheduler:** SLURM (`sbatch` / `squeue` / `sinfo` in `/usr/bin`).
+- **Login node** `mu012` — 2 cores, 8 GB RAM. **Build / sync only; never run a
+  KL job here.** It has internet (crates.io + rustup reachable); compute nodes
+  do **not**.
+- **`cpu` partition** (default): ~389 nodes, ~64 cores/node (2× Xeon Gold 6338),
+  usually near-full, so queue waits are normal. Also `fat` (large memory) and
+  `gpu`.
+- **Account / QOS:** `-A yushilingroup`, `--qos=normal` (or `long`) — already
+  baked into the `hpc/*.sbatch` directives.
+- **`$HOME = /public/home/majj`** on Lustre (`/public`, ~1 TB, no per-user
+  quota), **shared across all nodes** → a binary built once on the login node is
+  visible to every compute node with no extra transfer.
+
+### Connection
+
+```bash
+ssh majj@10.26.14.64        # login node mu012
+```
+
+(rustcox is a private repo, so this host is recorded directly.)
+
+### Workflow — Mac = git authority, HPC = compute copy
+
+The Mac repo is the git authority; the cluster copy is synced with `rsync`
+(keeps no GitHub token on the cluster). The Mac's `target/` is a Darwin/arm64
+build — **never sync it up**; build fresh on the login node (x86_64 Linux).
+
+```bash
+# 1. sync code up (exclude git, the wrong-arch target, and results)
+rsync -az --exclude='.git' --exclude='target' --exclude='results' \
+  ./ majj@10.26.14.64:/public/home/majj/rustcox/
+
+# 2. on the login node: build once (internet here; binary lands on shared $HOME)
+ssh majj@10.26.14.64
+cd ~/rustcox
+export PATH="$HOME/.cargo/bin:$PATH"   # rustup installed user-space
+rustup update stable
+cargo build --release                  # → target/release/rustcox, visible to compute nodes
+
+# 3. submit (SBATCH directives already set account/partition/qos/cpus)
+sbatch hpc/h4_determinism.sbatch       # H4 seq-vs-parallel determinism proof
+sbatch hpc/big_groups.sbatch           # D6 / B6 / E6 rank-6 tables
+squeue -u majj                         # monitor; stdout → results/<job-name>-<id>.out
+
+# 4. back on the Mac: pull results down and commit locally
+rsync -az majj@10.26.14.64:/public/home/majj/rustcox/results/ ./results/
+```
+
+If the login-node linker complains, `module load gcc/12.1` (or 11.4 / 14.2)
+before `cargo build`. No conda / Julia is needed — rustcox is pure Rust.
 
 ## Parallel scaling caveat
 

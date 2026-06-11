@@ -47,6 +47,22 @@ cd pycox-ref && python3 gen_golden.py kl B3:2,1,1   # one-off golden file
 python3 -c "from pycox_ref import *; ..."    # interrogate the oracle (run inside pycox-ref/)
 ```
 
+## HPC (XMU cluster)
+
+Big groups (H4, rank-6) run on the **XMU HPC via SLURM**. Login node `mu012`
+(2 c / 8 GB) is for build + sync only; `$HOME=/public/home/majj` on Lustre is
+shared to all compute nodes, which have **no internet** — so build the binary
+on the login node first. Full details (cluster facts, account/qos, rsync
+workflow) are in `docs/HPC.md` § *XMU cluster access*; the submit scripts are
+versioned in `hpc/`.
+
+```bash
+# sync up → build on login node → submit → pull results down
+rsync -az --exclude='.git' --exclude='target' --exclude='results' ./ majj@10.26.14.64:/public/home/majj/rustcox/
+ssh majj@10.26.14.64 'cd rustcox && export PATH=$HOME/.cargo/bin:$PATH && cargo build --release && sbatch hpc/h4_determinism.sbatch'
+rsync -az majj@10.26.14.64:/public/home/majj/rustcox/results/ ./results/
+```
+
 ## Key conventions (details in plan §0.3)
 
 - Polynomials in `v`; classical `q = v²`. Unequal parameters ⇒ negative
