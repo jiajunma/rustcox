@@ -65,12 +65,20 @@ pub struct CellsOpts {
     /// level) or only those whose inverse also lies in the cell (`false`, the
     /// recursion's setting).  Mirrors PyCox `allcells`.
     pub all_cells: bool,
-    // `threads` and other parallelism knobs are reserved for Task P6.
+    /// Thread count passed straight through to [`relklpols`] for the relative-KL
+    /// wavefront (Task P6).  Convention (see [`RelKlOpts`]): `None` ⇒ global
+    /// Rayon pool, `Some(0 | 1)` ⇒ sequential, `Some(t > 1)` ⇒ a private pool.
+    /// The cell partition and star-class reps are **identical** for any value —
+    /// `relklpols` is deterministic across thread counts.
+    pub threads: Option<usize>,
 }
 
 impl Default for CellsOpts {
     fn default() -> Self {
-        CellsOpts { all_cells: true }
+        CellsOpts {
+            all_cells: true,
+            threads: None,
+        }
     }
 }
 
@@ -122,7 +130,7 @@ pub fn klcells_with_tiers(
     tier_direct: usize,
     tier_tau: usize,
 ) -> Result<KlCellsResult, KlError> {
-    let raw = klcells_raw(g, opts.all_cells, tier_direct, tier_tau)?;
+    let raw = klcells_raw(g, opts.all_cells, opts.threads, tier_direct, tier_tau)?;
 
     // Top-level / uniform canonicalization to the golden format.
     let cells = canonicalize_cells(g, &raw.cells);
@@ -146,9 +154,14 @@ struct RawCells {
 }
 
 /// The PyCox `klcells(W, 1, v, allcells)` recursion, equal parameters.
+///
+/// `threads` is forwarded verbatim to [`relklpols`]; it affects only wall time,
+/// not the partition.  The recursion on `W1` runs sequentially per call but its
+/// own `relklpols` invocations inherit the same `threads`.
 fn klcells_raw(
     g: &CoxeterGroup,
     all_cells: bool,
+    threads: Option<usize>,
     tier_direct: usize,
     tier_tau: usize,
 ) -> Result<RawCells, KlError> {
@@ -178,7 +191,7 @@ fn klcells_raw(
     let x1p: Vec<Word> = red_left_coset_reps(g, &j);
 
     // --- Recurse on W1 (allcells = false) -----------------------------------
-    let kk = klcells_raw(&w1.group, false, tier_direct, tier_tau)?;
+    let kk = klcells_raw(&w1.group, false, threads, tier_direct, tier_tau)?;
 
     // --- Main induction loop (PyCox 12210–12288) ----------------------------
     let order = g.order;
@@ -231,7 +244,7 @@ fn klcells_raw(
 
         // rk = relklpols(W, W1, rep.to_relkl(W1.group), 1, v)
         let cell1 = rep.to_relkl(&w1.group);
-        let rk = relklpols(g, &w1, &cell1, &RelKlOpts::default());
+        let rk = relklpols(g, &w1, &cell1, &RelKlOpts { threads });
 
         // Build the induced W-graph and decompose (with size tiers).
         let weights = vec![1u32; g.rank];

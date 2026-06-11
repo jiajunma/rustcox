@@ -191,7 +191,82 @@ fn recursion_depth_and_tier_soundness() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: all_cells = false inverse closure + subset of full cells
+// Test 4: parallel klcells == sequential klcells (Task P6 determinism)
+// ---------------------------------------------------------------------------
+
+/// The multiset of star-rep vertex-word sets (each rep's `x`, sorted), for an
+/// order-insensitive set-equality comparison of the star reps.
+fn star_rep_word_sets(res: &rustcox_core::kl::KlCellsResult) -> BTreeSet<Vec<Word>> {
+    res.star_reps
+        .iter()
+        .map(|g| {
+            let mut v = g.x.clone();
+            v.sort();
+            v
+        })
+        .collect()
+}
+
+/// `klcells` must produce IDENTICAL `cells` and star-class reps whether the
+/// relative-KL wavefront runs sequentially or on 2 / 4 threads.  This pins the
+/// two-phase deterministic interning of the parallel `relklpols` (Task P6):
+/// only *when* a block is computed may change, never the cell partition or the
+/// pool order that the W-graphs are built from.
+#[test]
+fn parallel_cells_equal_sequential() {
+    use rustcox_core::kl::klcells;
+
+    for name in ["B4", "H3", "F4"] {
+        let g = group_from_golden(name);
+
+        // Sequential baseline (threads = Some(1)).
+        let seq = klcells(
+            &g,
+            &CellsOpts {
+                all_cells: true,
+                threads: Some(1),
+            },
+        )
+        .unwrap();
+        let seq_star_sets = star_rep_word_sets(&seq);
+
+        for &t in &[2usize, 4] {
+            let par = klcells(
+                &g,
+                &CellsOpts {
+                    all_cells: true,
+                    threads: Some(t),
+                },
+            )
+            .unwrap();
+
+            // (a) the canonicalized cell partition is byte-identical.
+            assert_eq!(
+                par.cells, seq.cells,
+                "{name} (threads={t}): cells must equal the sequential partition EXACTLY"
+            );
+            // (b) the number of star-class reps matches.
+            assert_eq!(
+                par.n_star_reps, seq.n_star_reps,
+                "{name} (threads={t}): n_star_reps mismatch"
+            );
+            assert_eq!(
+                par.star_reps.len(),
+                seq.star_reps.len(),
+                "{name} (threads={t}): star_reps length mismatch"
+            );
+            // (c) the star reps' vertex-word sets match as a set.
+            assert_eq!(
+                star_rep_word_sets(&par),
+                seq_star_sets,
+                "{name} (threads={t}): star-rep vertex sets must match the sequential reps"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: all_cells = false inverse closure + subset of full cells
 // ---------------------------------------------------------------------------
 
 /// With `all_cells=false`, each output cell keeps only elements whose inverse
@@ -204,7 +279,10 @@ fn allcells_false_inverse_closure() {
     let g = group_from_golden("B3");
 
     let full = klcells(&g, &CellsOpts::default()).unwrap();
-    let opts_false = CellsOpts { all_cells: false };
+    let opts_false = CellsOpts {
+        all_cells: false,
+        threads: None,
+    };
     let reduced = klcells(&g, &opts_false).unwrap();
 
     // Build full cells as canonical-word-sets for the subset check; index each

@@ -56,21 +56,31 @@ use crate::{
     parabolic::{red_left_coset_reps, Parabolic},
 };
 
+use rayon::prelude::*;
+
 use super::relkl_recur::{
-    compute_h, diag_block_mu, intern, relmue, CaseBCtx, Cu, Cx, Lft, SlotState,
+    classify_block, compute_caseb_block, diag_block_mu, intern, relmue, CaseBBlock, Cu, Cx,
+    LayerCtx, Lft, SlotState, XBlockKind,
 };
 
 // ---------------------------------------------------------------------------
 // Public options + output
 // ---------------------------------------------------------------------------
 
-/// Options for [`relklpols`].  A placeholder for future parallelism knobs
-/// (Task P6); only [`Default`] is meaningful today.
+/// Options for [`relklpols`].
+///
+/// `threads` controls the `y`-wavefront parallelism (Task P6).  The output is
+/// **byte-identical** for any thread count — only *when* a block is computed
+/// changes, never the order in which polynomials are interned.  Convention
+/// (matching the Phase-1 KL driver [`klpolynomials`](crate::kl::klpolynomials)):
+/// - `None`        → the global Rayon pool;
+/// - `Some(0 | 1)` → fully sequential (no pool overhead);
+/// - `Some(t > 1)` → a private pool of `t` threads for this call.
 #[derive(Clone, Debug, Default)]
 pub struct RelKlOpts {
-    // Reserved for future use (e.g. `threads: usize`).  Kept private so adding
-    // fields is non-breaking.
-    _private: (),
+    /// Thread count for the `y`-wavefront.  See the type docs for the
+    /// convention.  `None` ⇒ global pool; `Some(0|1)` ⇒ sequential.
+    pub threads: Option<usize>,
 }
 
 /// Output of [`relklpols`].
@@ -120,17 +130,41 @@ pub struct RelKlOutput {
 /// Equal parameters only: all generator weights are implicitly `1` (PyCox's
 /// `weightL = 1` branch).  No weights parameter is taken; the `Lw`/`Lw1` length
 /// sums below are plain word lengths.
+///
+/// `opts.threads` selects the wavefront thread pool (see [`RelKlOpts`]); the
+/// output is byte-identical for every thread count.
+pub fn relklpols(
+    w: &CoxeterGroup,
+    w1: &Parabolic,
+    cell1: &RelKlInput,
+    opts: &RelKlOpts,
+) -> RelKlOutput {
+    // Threading convention (matches the Phase-1 KL driver): Some(0|1) runs the
+    // recursion directly (no pool); Some(t>1) installs a private t-thread pool;
+    // None uses the ambient/global pool.  Determinism is independent of this
+    // choice — only `bruhatX` and the per-layer Case-B compute use the pool.
+    match opts.threads {
+        Some(0) | Some(1) => relklpols_inner(w, w1, cell1),
+        Some(t) => {
+            // A private pool isolates this call; if the builder fails (rare) we
+            // fall back to the ambient pool rather than erroring out — the math
+            // is identical either way.
+            match rayon::ThreadPoolBuilder::new().num_threads(t).build() {
+                Ok(pool) => pool.install(|| relklpols_inner(w, w1, cell1)),
+                Err(_) => relklpols_inner(w, w1, cell1),
+            }
+        }
+        None => relklpols_inner(w, w1, cell1),
+    }
+}
+
+/// The recursion body (runs inside the caller-selected Rayon pool).
 // The recursion is a faithful matrix port of PyCox `relklpols`: the positional
 // `(y, x, v, u)` index loops mirror the source line-for-line and index multiple
 // parallel structures (`mat`, `bruhatX`, `bij`, the coset/cell tables), so
 // iterator rewrites would obscure the correspondence rather than clarify it.
 #[allow(clippy::needless_range_loop)]
-pub fn relklpols(
-    w: &CoxeterGroup,
-    w1: &Parabolic,
-    cell1: &RelKlInput,
-    _opts: &RelKlOpts,
-) -> RelKlOutput {
+fn relklpols_inner(w: &CoxeterGroup, w1: &Parabolic, cell1: &RelKlInput) -> RelKlOutput {
     debug_assert!(
         matches!(cell1.mpols, MuPools::PerGen(_)),
         "relklpols expects cell1 in PerGen form (from CellGraph::to_relkl)"
@@ -231,9 +265,17 @@ pub fn relklpols(
     }
 
     // --- bruhatX[y][x] = Bruhat(X1[x] <= X1[y]) for x <= y -------------------
-    // Stored as a full nx×nx symmetric-by-construction lower table: bx[y][x].
+    // Stored as a lower-triangular table bx[y][x] (row y has length y+1).  The
+    // rows are mutually independent `leq` calls, so we build them in parallel
+    // (Task P6).  The result is deterministic: each row is a pure function of
+    // the coset reps, and `par_iter` preserves index order on collect.
     let bruhat_x: Vec<Vec<bool>> = (0..nx)
-        .map(|y| (0..=y).map(|x| bruhat::leq(w, &x1[x], &x1[y])).collect())
+        .into_par_iter()
+        .map(|y| {
+            (0..=y)
+                .map(|x| bruhat::leq(w, &x1[x], &x1[y]))
+                .collect::<Vec<bool>>()
+        })
         .collect();
     // Helper closure to query bruhatX with x <= y (only valid then).
     // bruhat_x[y] has length y+1 (indices x = 0..=y).  The recursion only ever
@@ -281,135 +323,114 @@ pub fn relklpols(
         mat.insert((y, y), diag);
     }
 
-    // --- Main recursion ------------------------------------------------------
+    // --- Main recursion (wavefront over y; parallel over x per layer) --------
+    //
+    // Determinism (mirrors the Phase-1 KL driver's two-phase pattern): for a
+    // fixed `y`, every Case-B block `(y, x)` is a *pure* function of the frozen
+    // lower layers (`mat` blocks with first index `< y`) plus the cell diagonal
+    // `(0, 0)`.  We therefore compute all Case-B blocks of a layer **in
+    // parallel** producing INLINE Laurent values (no pool writes), then intern
+    // them **sequentially** in the exact `(x desc, v, u)` order the sequential
+    // reference uses — so `rklpols`/`mues` grow identically for any thread
+    // count.  Case-A blocks copy the `rk` of the same-layer block `(y, sx)`
+    // (`sx > x`); that read is a same-`y` dependency, so Case A is interned
+    // inline during the sequential walk (it is the cheap branch — no `rklpols`
+    // growth, only a `mu`).
     let mut rklpols: Vec<Laurent> = vec![Laurent::zero(), Laurent::one()];
 
     for y in 0..nx {
         let ldy = w.left_descents(&x1[y]); // W-generators.
-        for x in (0..y).rev() {
-            if !bx(y, x) {
-                continue;
-            }
-            // fs  = [s in ldy : lft[s][x] is In(xi) with xi > x] (s·x ascends, stays in X)
-            // fs1 = [s in ldy : lft[s][x] is In(xi) with 0 <= xi < x]
-            let fs: Vec<Gen> = ldy
-                .iter()
-                .copied()
-                .filter(|&s| matches!(lft[s as usize][x], Lft::In(xi) if xi > x))
-                .collect();
-            let fs1: Vec<Gen> = ldy
-                .iter()
-                .copied()
-                .filter(|&s| matches!(lft[s as usize][x], Lft::In(xi) if xi < x))
-                .collect();
 
-            if !fs.is_empty() {
-                // Case A: s·x ascends and stays in X.
-                let s = fs[0] as usize;
-                let sx = match lft[s][x] {
-                    Lft::In(xi) => xi,
-                    Lft::Out(_) => unreachable!("fs guarantees In"),
-                };
-                // We need to read mat[(y, sx)] and write mat[(y, x)] — split borrow.
-                for v in 0..nc {
-                    for u in 0..nc {
-                        if !mat[&(y, x)][v][u].is_marked() {
-                            continue;
-                        }
-                        // Source slot mat[y,sx][v][u].
-                        let src = if bx(y, sx) {
-                            mat.get(&(y, sx)).map(|g| g[v][u])
-                        } else {
-                            None
-                        };
-                        let new_state = match src {
-                            Some(s_state) if s_state.is_marked() => {
-                                // Copy the rk verbatim; compute mu via relmue.
-                                let rk = s_state.rk().unwrap_or(0);
-                                let mu = if rk != 0 {
-                                    let m = relmue(
-                                        lw[y] + lw1[v],
-                                        lw[x] + lw1[u],
-                                        &rklpols[rk as usize],
-                                    );
-                                    intern(&mut mues, m)
-                                } else {
-                                    0
-                                };
-                                SlotState::Done { rk, mu }
+        // Descending x-list of present blocks, with each block classified.
+        let xs: Vec<(Cx, XBlockKind)> = (0..y)
+            .rev()
+            .filter(|&x| bx(y, x))
+            .map(|x| (x, classify_block(&ldy, &lft, x)))
+            .collect();
+
+        // ---- Phase 1 (parallel): compute every Case-B block's inline h. -----
+        // Keyed by x (descending order preserved by `par_iter` over `xs`).
+        let layer_ctx = LayerCtx {
+            y,
+            ldy: &ldy,
+            lw: &lw,
+            lw1: &lw1,
+            nc,
+            bx: &bruhat_x,
+            lft: &lft,
+            lft1: &lft1,
+            mat: &mat,
+            mues: &mues,
+            rklpols: &rklpols,
+            cell1,
+        };
+        let caseb_blocks: Vec<Option<CaseBBlock>> = xs
+            .par_iter()
+            .map(|&(x, kind)| match kind {
+                XBlockKind::CaseB => {
+                    let marks = &mat[&(y, x)];
+                    Some(compute_caseb_block(&layer_ctx, x, marks))
+                }
+                XBlockKind::CaseA { .. } => None,
+            })
+            .collect();
+
+        // ---- Phase 2 (sequential, x desc then v, u): intern into the pools. -
+        for (idx, &(x, kind)) in xs.iter().enumerate() {
+            match kind {
+                XBlockKind::CaseA { sx } => {
+                    for v in 0..nc {
+                        for u in 0..nc {
+                            if !mat[&(y, x)][v][u].is_marked() {
+                                continue;
                             }
-                            _ => SlotState::Done { rk: 0, mu: 0 }, // '0c0'
-                        };
-                        mat.get_mut(&(y, x)).unwrap()[v][u] = new_state;
+                            // Source slot mat[y, sx][v][u] (same y-layer, sx>x,
+                            // already finalized).
+                            let src = if bx(y, sx) {
+                                mat.get(&(y, sx)).map(|g| g[v][u])
+                            } else {
+                                None
+                            };
+                            let new_state = match src {
+                                Some(s_state) if s_state.is_marked() => {
+                                    let rk = s_state.rk().unwrap_or(0);
+                                    let mu = if rk != 0 {
+                                        let m = relmue(
+                                            lw[y] + lw1[v],
+                                            lw[x] + lw1[u],
+                                            &rklpols[rk as usize],
+                                        );
+                                        intern(&mut mues, m)
+                                    } else {
+                                        0
+                                    };
+                                    SlotState::Done { rk, mu }
+                                }
+                                _ => SlotState::Done { rk: 0, mu: 0 }, // '0c0'
+                            };
+                            mat.get_mut(&(y, x)).unwrap()[v][u] = new_state;
+                        }
                     }
                 }
-            } else {
-                // Case B: fs empty.
-                for u in 0..nc {
-                    // Vanishing test: ∃ s ∈ ldy with lft[s][x] = Out(t) and
-                    // u < lft1[t][u]  (s exits X at W1-gen t and t ascends u).
-                    let vanishes = ldy.iter().any(|&s| {
-                        if let Lft::Out(t) = lft[s as usize][x] {
-                            (u as i64) < lft1[t as usize][u]
-                        } else {
-                            false
-                        }
-                    });
-                    if vanishes {
-                        for v in 0..nc {
-                            if mat[&(y, x)][v][u].is_marked() {
-                                mat.get_mut(&(y, x)).unwrap()[v][u] =
-                                    SlotState::Done { rk: 0, mu: 0 };
-                            }
-                        }
-                        continue;
-                    }
-                    // s = fs1[0] if fs1 nonempty else ldy[0].
-                    let s = if let Some(&s1) = fs1.first() {
-                        s1 as usize
-                    } else {
-                        ldy[0] as usize
-                    };
-                    let sx = lft[s][x]; // Lft
-                    let sy = match lft[s][y] {
-                        Lft::In(yi) => yi,
-                        // s ∈ ldy(y) means s is a left descent of y, so s·y < y
-                        // stays in X (descending in X keeps you in X).  PyCox
-                        // always reads sy as an index.
-                        Lft::Out(_) => unreachable!("s ∈ ldy ⇒ s·y descends, stays in X"),
-                    };
+                XBlockKind::CaseB => {
+                    let block = caseb_blocks[idx]
+                        .as_ref()
+                        .expect("Case-B block precomputed in phase 1");
                     for v in 0..nc {
-                        if !mat[&(y, x)][v][u].is_marked() {
-                            continue;
+                        for u in 0..nc {
+                            let Some(h) = block.h[v][u].as_ref() else {
+                                continue; // absent slot
+                            };
+                            let new_state = if h.is_zero() {
+                                SlotState::Done { rk: 0, mu: 0 } // '0c0'
+                            } else {
+                                let rk = intern(&mut rklpols, h.clone());
+                                let m = relmue(lw[y] + lw1[v], lw[x] + lw1[u], h);
+                                let mu = intern(&mut mues, m);
+                                SlotState::Done { rk, mu }
+                            };
+                            mat.get_mut(&(y, x)).unwrap()[v][u] = new_state;
                         }
-                        let h = compute_h(CaseBCtx {
-                            y,
-                            x,
-                            u,
-                            v,
-                            s,
-                            sx,
-                            sy,
-                            lw: &lw,
-                            lw1: &lw1,
-                            nc,
-                            bx: &bruhat_x,
-                            lft: &lft,
-                            lft1: &lft1,
-                            mat: &mat,
-                            mues: &mues,
-                            rklpols: &rklpols,
-                            cell1,
-                        });
-                        let new_state = if h.is_zero() {
-                            SlotState::Done { rk: 0, mu: 0 } // '0c0'
-                        } else {
-                            let rk = intern(&mut rklpols, h.clone());
-                            let m = relmue(lw[y] + lw1[v], lw[x] + lw1[u], &h);
-                            let mu = intern(&mut mues, m);
-                            SlotState::Done { rk, mu }
-                        };
-                        mat.get_mut(&(y, x)).unwrap()[v][u] = new_state;
                     }
                 }
             }

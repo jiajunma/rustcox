@@ -164,6 +164,159 @@ pub(super) fn diag_block_mu(slot: &SlotData, mpols: &MuPools, mues: &mut Vec<Lau
 // Case-B `h` computation (the heart of the recursion)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-`x` block classification + the pure Case-B block computation
+// ---------------------------------------------------------------------------
+
+/// How the recursion treats one `(y, x)` block, given the left-descent set of
+/// `y`.  Mirrors the PyCox `fs`/`fs1` branch at the top of the `for x` loop.
+///
+/// - [`XBlockKind::CaseA`] (`fs` non-empty): `s·x` ascends and stays in `X` at
+///   coset index `sx`.  The block **copies** the `rk` of the same-layer block
+///   `(y, sx)` (with `sx > x`) and interns only a `mu`.  Because it reads a
+///   block in its own `y`-layer it is **not** parallelizable and is handled
+///   sequentially during the intern walk.
+/// - [`XBlockKind::CaseB`] (`fs` empty): the block reads only **frozen** lower
+///   layers (`sy < y`, `z < sy`) plus the cell-diagonal `(0,0)`; it is a pure
+///   function of frozen state and therefore safe to compute in parallel.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum XBlockKind {
+    /// `fs` non-empty: copy `rk` from `(y, sx)`; `sx` is the In target (`> x`).
+    CaseA { sx: Cx },
+    /// `fs` empty: the parallel-safe recursion branch.
+    CaseB,
+}
+
+/// Classify the `(y, x)` block per PyCox's `fs`/`fs1` test.
+///
+/// `ldy` is the left-descent set of `y` (W-generators); `lft` and `x` index the
+/// coset-rep table.  Returns the [`XBlockKind`] plus the `fs1`-derived generator
+/// `s` Case B needs (`fs1[0]` if non-empty else `ldy[0]`), so the caller does
+/// not recompute it.
+pub(super) fn classify_block(ldy: &[Gen], lft: &[Vec<Lft>], x: Cx) -> XBlockKind {
+    // fs = [s in ldy : lft[s][x] = In(xi) with xi > x].  First match wins.
+    if let Some(&s) = ldy
+        .iter()
+        .find(|&&s| matches!(lft[s as usize][x], Lft::In(xi) if xi > x))
+    {
+        let sx = match lft[s as usize][x] {
+            Lft::In(xi) => xi,
+            Lft::Out(_) => unreachable!("fs guarantees In"),
+        };
+        XBlockKind::CaseA { sx }
+    } else {
+        XBlockKind::CaseB
+    }
+}
+
+/// The inline (un-interned) result of one Case-B `(y, x)` block.
+///
+/// `h[v][u]` is the relative-KL polynomial value for slot `(v, u)`:
+/// - `None`           — the slot is absent (`'f'`) and must stay so;
+/// - `Some(Laurent)`  — the slot is marked; a zero Laurent means `'0c0'`,
+///   a non-zero Laurent is interned into the `rklpols`/`mues` pools by the
+///   sequential phase in `(v, u)` order.
+///
+/// Computing this is a pure function of the frozen `mat`/pools, so it is safe to
+/// run for all `x` of a layer in parallel; only the subsequent interning is
+/// order-sensitive (and stays sequential).
+pub(super) struct CaseBBlock {
+    pub h: Vec<Vec<Option<Laurent>>>,
+}
+
+/// Read-only inputs shared by every Case-B block of a single `y`-layer.
+///
+/// Bundles the frozen state so [`compute_caseb_block`] can be a free function
+/// (and thus trivially `Send`-able into a Rayon task).
+pub(super) struct LayerCtx<'a> {
+    pub y: Cx,
+    pub ldy: &'a [Gen],
+    pub lw: &'a [u32],
+    pub lw1: &'a [u32],
+    pub nc: usize,
+    pub bx: &'a [Vec<bool>],
+    pub lft: &'a [Vec<Lft>],
+    pub lft1: &'a [Vec<i64>],
+    pub mat: &'a HashMap<(Cx, Cx), Vec<Vec<SlotState>>>,
+    pub mues: &'a [Laurent],
+    pub rklpols: &'a [Laurent],
+    pub cell1: &'a RelKlInput,
+}
+
+/// Compute the inline Case-B block for coset index `x` in layer `y`.
+///
+/// `marks[v][u]` records whether slot `(v, u)` of `mat[(y, x)]` is marked
+/// (PyCox `'c'`); absent slots stay `None` in the output.  This is a faithful
+/// transcription of the Case-B body of `relklpols` with the interning lifted
+/// out: it produces the raw `h` Laurents instead of pool indices.
+pub(super) fn compute_caseb_block(
+    ctx: &LayerCtx<'_>,
+    x: Cx,
+    marks: &[Vec<SlotState>],
+) -> CaseBBlock {
+    let nc = ctx.nc;
+    let y = ctx.y;
+    let mut h_grid: Vec<Vec<Option<Laurent>>> = vec![vec![None; nc]; nc];
+
+    for u in 0..nc {
+        // Vanishing test: ∃ s ∈ ldy with lft[s][x] = Out(t) and u < lft1[t][u].
+        let vanishes = ctx.ldy.iter().any(|&s| {
+            if let Lft::Out(t) = ctx.lft[s as usize][x] {
+                (u as i64) < ctx.lft1[t as usize][u]
+            } else {
+                false
+            }
+        });
+        if vanishes {
+            for v in 0..nc {
+                if marks[v][u].is_marked() {
+                    h_grid[v][u] = Some(Laurent::zero());
+                }
+            }
+            continue;
+        }
+        // s = fs1[0] if fs1 nonempty else ldy[0].
+        let s = ctx
+            .ldy
+            .iter()
+            .copied()
+            .find(|&s1| matches!(ctx.lft[s1 as usize][x], Lft::In(xi) if xi < x))
+            .unwrap_or(ctx.ldy[0]) as usize;
+        let sx = ctx.lft[s][x];
+        let sy = match ctx.lft[s][y] {
+            Lft::In(yi) => yi,
+            Lft::Out(_) => unreachable!("s ∈ ldy ⇒ s·y descends, stays in X"),
+        };
+        for v in 0..nc {
+            if !marks[v][u].is_marked() {
+                continue;
+            }
+            let h = compute_h(CaseBCtx {
+                y,
+                x,
+                u,
+                v,
+                s,
+                sx,
+                sy,
+                lw: ctx.lw,
+                lw1: ctx.lw1,
+                nc,
+                bx: ctx.bx,
+                lft: ctx.lft,
+                lft1: ctx.lft1,
+                mat: ctx.mat,
+                mues: ctx.mues,
+                rklpols: ctx.rklpols,
+                cell1: ctx.cell1,
+            });
+            h_grid[v][u] = Some(h);
+        }
+    }
+
+    CaseBBlock { h: h_grid }
+}
+
 /// Read-only context bundle for [`compute_h`] — keeps the borrow set explicit.
 pub(super) struct CaseBCtx<'a> {
     pub y: Cx,

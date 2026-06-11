@@ -193,6 +193,43 @@ fn rklpols_pool_sane() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3b: parallel relklpols is byte-identical to sequential (Task P6)
+// ---------------------------------------------------------------------------
+
+/// The relative-KL wavefront must intern `rklpols`/`mues` in the same order and
+/// build the same `klmat` regardless of thread count.  We compare the two pools
+/// and the induced-graph matrix produced with `threads = Some(1)` against
+/// `Some(2)` and `Some(4)` for every W1 cell of B4 (the recursion's deepest
+/// non-trivial group in the local suite).
+#[test]
+fn relklpols_parallel_byte_identical() {
+    let w = CoxeterGroup::from_type("B4").unwrap();
+    let j: Vec<u8> = vec![0, 1, 2]; // W1 = B3.
+    let w1 = Parabolic::new(&w, &j).unwrap();
+    let t1 = build_table(&w1.group);
+
+    for cell in w1_cells(&t1) {
+        let cell1 = relkl_input_from_table(&w1.group, &t1, &cell);
+
+        let seq = relklpols(&w, &w1, &cell1, &RelKlOpts { threads: Some(1) });
+        for &t in &[2usize, 4] {
+            let par = relklpols(&w, &w1, &cell1, &RelKlOpts { threads: Some(t) });
+            assert_eq!(
+                par.rklpols, seq.rklpols,
+                "rklpols pool differs at threads={t}"
+            );
+            assert_eq!(par.mues, seq.mues, "mues pool differs at threads={t}");
+            assert_eq!(par.input.elms, seq.input.elms, "elms differ at threads={t}");
+            assert_eq!(
+                par.input.klmat, seq.input.klmat,
+                "klmat differs at threads={t}"
+            );
+            assert_eq!(par.perms, seq.perms, "perms differ at threads={t}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test 4: hand smoke — A2 with J = {0} (W1 = A1)
 // ---------------------------------------------------------------------------
 
