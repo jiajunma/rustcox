@@ -721,4 +721,23 @@ mod tests {
         assert_eq!(par.word_to_w(&[0, 1, 2]), vec![1, 2, 3]);
         assert_eq!(par.word_to_w(&[2, 0]), vec![3, 1]);
     }
+
+    /// Spot-check F4 parabolic classification against PyCox oracle:
+    /// - F4 minus gen 0 (sub {1,2,3}): the restricted Cartan matches C3 exactly.
+    /// - F4 minus gen 3 (sub {0,1,2}): the restricted Cartan matches B3.
+    ///
+    /// Verified with `reflectionsubgroup(coxeter("F",4), [1,2,3]).cartantype` → C3
+    /// and `reflectionsubgroup(coxeter("F",4), [0,1,2]).cartantype` → B3 (PyCox).
+    #[test]
+    fn f4_series_spot_check() {
+        let w = CoxeterGroup::from_type("F4").unwrap();
+        // Remove gen 0 → {1,2,3}: sub-Cartan matches C3.
+        let cls1 = classify_cartan_sub(&w, &[1, 2, 3]).unwrap();
+        assert_eq!(cls1.len(), 1);
+        assert_eq!(cls1[0].0, Series::C, "F4 remove 0 must be C3, not B3");
+        // Remove gen 3 → {0,1,2}: sub-Cartan matches B3.
+        let cls2 = classify_cartan_sub(&w, &[0, 1, 2]).unwrap();
+        assert_eq!(cls2.len(), 1);
+        assert_eq!(cls2[0].0, Series::B, "F4 remove 3 must be B3, not C3");
+    }
 }
