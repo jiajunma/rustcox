@@ -157,6 +157,10 @@ pub type RepsSink<'a> = dyn FnMut(usize, &CellGraph) -> io::Result<()> + 'a;
 /// A sink that consumes one [`CellRecord`] as it is emitted.
 pub type CellsSink<'a> = dyn FnMut(CellRecord) -> io::Result<()> + 'a;
 
+/// A no-argument callback to flush the backing stream before a checkpoint is
+/// written.  The CLI provides a real flush; tests pass `None`.
+pub type FlushSink<'a> = dyn FnMut() -> io::Result<()> + 'a;
+
 /// Compute the left-cell partition of `g` by parabolic induction.
 ///
 /// See the [module docs](self) for the algorithm.  Equal parameters only
@@ -259,6 +263,35 @@ pub fn klcells_streaming<'a, 'f: 'a>(
     klcells_streaming_with_tiers(g, opts, sink, reps_sink, ckpt, TIER_DIRECT, TIER_TAU)
 }
 
+/// [`klcells_streaming`] with an optional pre-checkpoint flush callback.
+///
+/// `flush_sink`, when `Some`, is called just before each checkpoint write.
+/// The CLI uses this to flush its `BufWriter<GzEncoder<…>>` so that the number
+/// of records on disk exactly matches `checkpoint.records` at the moment the
+/// checkpoint is written.  Without the flush, a SIGTERM could leave the last
+/// few records of the current rep in the BufWriter's internal buffer, making
+/// the checkpoint record count larger than the number of recoverable records
+/// in the gz file on disk.
+pub fn klcells_streaming_with_flush<'a, 'f: 'a>(
+    g: &CoxeterGroup,
+    opts: &CellsOpts,
+    sink: &'a mut CellsSink<'f>,
+    reps_sink: Option<&'a mut RepsSink<'f>>,
+    flush_sink: Option<&'a mut FlushSink<'f>>,
+    ckpt: Option<&CheckpointCfg>,
+) -> Result<KlCellsSummary, KlError> {
+    klcells_streaming_full(
+        g,
+        opts,
+        sink,
+        reps_sink,
+        flush_sink,
+        ckpt,
+        TIER_DIRECT,
+        TIER_TAU,
+    )
+}
+
 /// [`klcells_streaming`] with explicit size-tier thresholds (test hook; see
 /// [`klcells_with_tiers`]).
 #[allow(clippy::too_many_arguments)]
@@ -267,6 +300,21 @@ pub fn klcells_streaming_with_tiers<'a, 'f: 'a>(
     opts: &CellsOpts,
     sink: &'a mut CellsSink<'f>,
     reps_sink: Option<&'a mut RepsSink<'f>>,
+    ckpt: Option<&CheckpointCfg>,
+    tier_direct: usize,
+    tier_tau: usize,
+) -> Result<KlCellsSummary, KlError> {
+    klcells_streaming_full(g, opts, sink, reps_sink, None, ckpt, tier_direct, tier_tau)
+}
+
+/// Internal: full-parameter streaming driver.
+#[allow(clippy::too_many_arguments)]
+fn klcells_streaming_full<'a, 'f: 'a>(
+    g: &CoxeterGroup,
+    opts: &CellsOpts,
+    sink: &'a mut CellsSink<'f>,
+    reps_sink: Option<&'a mut RepsSink<'f>>,
+    flush_sink: Option<&'a mut FlushSink<'f>>,
     ckpt: Option<&CheckpointCfg>,
     tier_direct: usize,
     tier_tau: usize,
@@ -326,6 +374,7 @@ pub fn klcells_streaming_with_tiers<'a, 'f: 'a>(
     let mut emit = StreamEmitter {
         sink,
         reps_sink,
+        flush_sink,
         next_rep_idx: reps_seen,
     };
 
@@ -377,6 +426,10 @@ fn io_err(e: io::Error) -> KlError {
 struct StreamEmitter<'a, 'f: 'a> {
     sink: &'a mut CellsSink<'f>,
     reps_sink: Option<&'a mut RepsSink<'f>>,
+    /// Optional flush callback: called just before each checkpoint write so the
+    /// stream's BufWriter/GzEncoder data is committed to disk before the
+    /// checkpoint records count is persisted.  `None` in tests.
+    flush_sink: Option<&'a mut FlushSink<'f>>,
     /// Count of star-reps emitted so far (their serial index for `reps_sink`).
     next_rep_idx: usize,
 }
@@ -396,6 +449,18 @@ impl Emitter for StreamEmitter<'_, '_> {
             (rs)(idx, rep).map_err(io_err)?;
         }
         self.next_rep_idx += 1;
+        Ok(())
+    }
+
+    /// Flush the underlying cell sink by calling `flush` on it.  The cell sink
+    /// is a `dyn FnMut(CellRecord) -> io::Result<()>` — it does not expose a
+    /// flush method directly.  Instead we call the companion `flush_sink` stored
+    /// alongside it in [`StreamEmitter`] (set from the CLI path) and fall back
+    /// to a no-op when none is provided (tests / in-memory path).
+    fn flush(&mut self) -> Result<(), KlError> {
+        if let Some(f) = self.flush_sink.as_mut() {
+            f().map_err(io_err)?;
+        }
         Ok(())
     }
 }
@@ -538,6 +603,20 @@ trait Emitter {
 
     /// Record one star-rep W-graph as it is discovered.
     fn star_rep(&mut self, rep: &CellGraph) -> Result<(), KlError>;
+
+    /// Flush any buffered output to the underlying storage medium.
+    ///
+    /// Called just *before* each checkpoint write so that the stream on disk
+    /// reflects all records counted in `state.records` at checkpoint time.
+    /// Without this flush a SIGTERM during a run could leave the stream's
+    /// BufWriter / GzEncoder with unflushed data, making `checkpoint.records`
+    /// larger than the number of records recoverable from the file.
+    ///
+    /// The in-memory path is a no-op; only the streaming CLI path implements
+    /// a real flush.
+    fn flush(&mut self) -> Result<(), KlError> {
+        Ok(())
+    }
 }
 
 /// In-memory emitter: collects cells into `nc` and reps into `cr1`, exactly as
@@ -665,7 +744,9 @@ fn run_induction(
         // records on disk).  Resume re-runs rep `i` from scratch (relklpols is
         // not interruptible), so a kill anywhere inside rep `i` is recovered by
         // truncating the stream to `state.records` and replaying from rep `i`.
-        maybe_checkpoint(cfg, fingerprint, &state, i, false)?;
+        // The flush inside maybe_checkpoint ensures the stream file reflects
+        // exactly state.records before the checkpoint is written.
+        maybe_checkpoint(cfg, fingerprint, &state, i, false, emit)?;
 
         let rep = &reps[i];
 
@@ -749,7 +830,7 @@ fn run_induction(
     // Final checkpoint: records the completed state (next_rep == reps.len()), so
     // a resubmit after a clean finish does nothing.  Forced regardless of the
     // `every_reps` cadence so the terminal state is always persisted.
-    maybe_checkpoint(cfg, fingerprint, &state, i.max(reps.len()), true)?;
+    maybe_checkpoint(cfg, fingerprint, &state, i.max(reps.len()), true, emit)?;
 
     Ok(state)
 }
@@ -768,12 +849,18 @@ fn register_rep(state: &mut LoopState, rep: &CellGraph) {
 
 /// Write a checkpoint if `cfg` is set and either `force` or the rep count is a
 /// multiple of `cfg.every_reps`.
+///
+/// Calls `emit.flush()` **before** writing the checkpoint so that the stream's
+/// BufWriter/GzEncoder data is committed to disk.  This ensures that the number
+/// of records in the stream file is at least `state.records` at the moment the
+/// checkpoint is written — critical for the E8 gz-stream resume invariant.
 fn maybe_checkpoint(
     cfg: Option<&CheckpointCfg>,
     fingerprint: Option<&str>,
     state: &LoopState,
     next_rep: usize,
     force: bool,
+    emit: &mut dyn Emitter,
 ) -> Result<(), KlError> {
     let (Some(cfg), Some(fp)) = (cfg, fingerprint) else {
         return Ok(());
@@ -782,6 +869,10 @@ fn maybe_checkpoint(
     if !force && next_rep % every != 0 {
         return Ok(());
     }
+    // Flush the stream before persisting the checkpoint so the on-disk record
+    // count matches state.records.  A kill between flush and checkpoint write
+    // is safe: the older checkpoint is still intact (rename is atomic).
+    emit.flush()?;
     let ck = Checkpoint {
         fingerprint: fp.to_string(),
         next_rep: next_rep as u128,

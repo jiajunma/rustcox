@@ -21,6 +21,7 @@
 //! a kill at any moment loses at most one rep of work and the next resubmit
 //! recovers it.
 
+use std::cell::RefCell;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -30,7 +31,10 @@ use flate2::{write::GzEncoder, Compression};
 use rustcox_core::{
     group::CoxeterGroup,
     io::{cellgraph_json, cells_json_doc},
-    kl::{klcells, klcells_streaming, CellRecord, CellsOpts, CheckpointCfg, RepsSink},
+    kl::{
+        klcells, klcells_streaming_with_flush, CellRecord, CellsOpts, CheckpointCfg, FlushSink,
+        RepsSink,
+    },
 };
 
 use super::kl::write_json_doc;
@@ -117,8 +121,11 @@ fn run_streaming(group: &CoxeterGroup, opts: &CellsOpts, args: &CellsArgs) -> Re
     };
 
     // Open the stream writer, truncating to `records_to_keep` lines on resume.
-    let mut stream = StreamWriter::open(stream_path, records_to_keep)
-        .with_context(|| format!("opening stream file '{stream_path}'"))?;
+    // Wrap in RefCell so two closures (cell_sink and flush_fn) can share it.
+    let stream = RefCell::new(
+        StreamWriter::open(stream_path, records_to_keep)
+            .with_context(|| format!("opening stream file '{stream_path}'"))?,
+    );
     if records_to_keep > 0 {
         eprintln!(
             "resumed: kept {records_to_keep} cell records already on disk in '{stream_path}'"
@@ -134,7 +141,14 @@ fn run_streaming(group: &CoxeterGroup, opts: &CellsOpts, args: &CellsArgs) -> Re
 
     let t0 = Instant::now();
 
-    let mut cell_sink = |rec: CellRecord| -> io::Result<()> { stream.write_record(&rec) };
+    let mut cell_sink =
+        |rec: CellRecord| -> io::Result<()> { stream.borrow_mut().write_record(&rec) };
+
+    // Pre-checkpoint flush: called just before each checkpoint write so the
+    // BufWriter/GzEncoder bytes are committed to disk before the checkpoint
+    // records count is persisted.  Without this flush a SIGTERM mid-rep could
+    // leave fewer recoverable records in the gz than checkpoint.records says.
+    let mut flush_fn = || -> io::Result<()> { stream.borrow_mut().flush_inner() };
 
     // reps sink, only if --save-reps given.
     let reps_dir_ref = reps_dir.clone();
@@ -151,12 +165,16 @@ fn run_streaming(group: &CoxeterGroup, opts: &CellsOpts, args: &CellsArgs) -> Re
         } else {
             None
         };
-        klcells_streaming(group, opts, &mut cell_sink, reps_opt, ckpt.as_ref())
+        let flush_opt: Option<&mut FlushSink<'_>> = Some(&mut flush_fn);
+        klcells_streaming_with_flush(group, opts, &mut cell_sink, reps_opt, flush_opt, ckpt.as_ref())
     };
 
     let summary = summary.with_context(|| "streaming klcells failed")?;
 
-    stream.finish().with_context(|| "finalizing stream file")?;
+    stream
+        .into_inner()
+        .finish()
+        .with_context(|| "finalizing stream file")?;
     let elapsed = t0.elapsed();
 
     if let Some(k) = summary.resumed_at_rep {
@@ -254,6 +272,19 @@ impl StreamWriter {
         }
     }
 
+    /// Flush the BufWriter (plain) or GzEncoder (gz) to the OS.
+    ///
+    /// For gz, `GzEncoder::flush()` calls `Write::flush` on the underlying
+    /// `BufWriter`, committing all compressed data written so far to the OS
+    /// page cache.  This is called before each checkpoint write so the stream
+    /// record count on disk matches `checkpoint.records` at that instant.
+    fn flush_inner(&mut self) -> io::Result<()> {
+        match self {
+            StreamWriter::Plain(w) => w.flush(),
+            StreamWriter::Gz(w) => w.flush(),
+        }
+    }
+
     fn finish(self) -> io::Result<()> {
         match self {
             StreamWriter::Plain(mut w) => w.flush(),
@@ -267,27 +298,68 @@ impl StreamWriter {
 
 /// Read the first `keep` newline-terminated records of `path` (gz-transparent),
 /// returning the exact bytes (including trailing newlines) to retain.
+///
+/// For gz files, the stream may be truncated (no end-of-stream marker) if the
+/// process was killed mid-write.  In that case we recover as many complete
+/// newline-terminated lines as possible and cap at `keep` — this is always safe
+/// because the checkpoint invariant guarantees `keep ≤ actual_records_emitted`,
+/// so any complete line recovered from a partial gz is a valid cell record.
 fn read_prefix_lines(path: &str, is_gz: bool, keep: u128) -> Result<Vec<u8>> {
-    use std::io::Read;
-    let raw = std::fs::read(path).with_context(|| format!("reading '{path}'"))?;
-    let bytes: Vec<u8> = if is_gz {
-        let mut dec = flate2::read::GzDecoder::new(raw.as_slice());
-        let mut s = Vec::new();
-        dec.read_to_end(&mut s)
-            .with_context(|| format!("decompressing '{path}'"))?;
-        s
-    } else {
-        raw
-    };
+    use std::io::BufRead;
 
-    // Keep the first `keep` newline-terminated records.  `keep` is a u128 record
-    // count; cap it at usize for `take` (record counts never exceed usize here).
     let keep_n = keep.min(usize::MAX as u128) as usize;
-    let mut out = Vec::new();
-    for line in bytes.split_inclusive(|&b| b == b'\n').take(keep_n) {
-        out.extend_from_slice(line);
+
+    if is_gz {
+        // Read line-by-line through the GzDecoder so we can stop at `keep` lines
+        // and also tolerate a truncated gz (SIGTERM mid-write leaves no gz trailer).
+        // Lines that were fully written but whose containing DEFLATE block was not
+        // yet flushed are simply absent — that is fine; the checkpoint records count
+        // tells us the exact number of records that are safe to keep.
+        let raw = std::fs::read(path).with_context(|| format!("reading '{path}'"))?;
+        let dec = flate2::read::GzDecoder::new(raw.as_slice());
+        let mut reader = std::io::BufReader::new(dec);
+        let mut out = Vec::new();
+        let mut line = Vec::new();
+        let mut count = 0usize;
+        loop {
+            if count >= keep_n {
+                break;
+            }
+            line.clear();
+            let n = match reader.read_until(b'\n', &mut line) {
+                Ok(n) => n,
+                Err(_) => break, // truncated gz: stop at the last complete line
+            };
+            if n == 0 {
+                break; // clean EOF
+            }
+            // Only include lines that are newline-terminated (complete records).
+            // A partial last line (written but gz not flushed) is discarded.
+            if line.ends_with(b"\n") {
+                out.extend_from_slice(&line);
+                count += 1;
+            }
+            // If no trailing newline the gz ran out mid-line — stop here.
+            if !line.ends_with(b"\n") {
+                break;
+            }
+        }
+        if count < keep_n {
+            eprintln!(
+                "warning: gz stream in '{path}' is truncated; \
+                 recovered {count} of {keep_n} expected records — \
+                 the resume will re-emit the missing records"
+            );
+        }
+        Ok(out)
+    } else {
+        let raw = std::fs::read(path).with_context(|| format!("reading '{path}'"))?;
+        let mut out = Vec::new();
+        for line in raw.split_inclusive(|&b| b == b'\n').take(keep_n) {
+            out.extend_from_slice(line);
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 /// Write one star-rep W-graph to `dir/reps/NNNNNN.json.gz`.

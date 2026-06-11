@@ -18,8 +18,9 @@ pub use cells::CellData;
 pub use checkpoint::{Checkpoint, CheckpointCfg};
 pub use compute::klpolynomials_seq;
 pub use klcells::{
-    klcells, klcells_streaming, klcells_streaming_with_tiers, klcells_with_tiers, run_fingerprint,
-    CellRecord, CellsOpts, CellsSink, KlCellsResult, KlCellsSummary, RepsSink,
+    klcells, klcells_streaming, klcells_streaming_with_flush, klcells_streaming_with_tiers,
+    klcells_with_tiers, run_fingerprint, CellRecord, CellsOpts, CellsSink, FlushSink,
+    KlCellsResult, KlCellsSummary, RepsSink,
 };
 pub use parallel::klpolynomials;
 pub use relkl::{relklpols, RelKlOpts, RelKlOutput};
