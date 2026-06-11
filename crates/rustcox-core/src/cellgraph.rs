@@ -570,6 +570,94 @@ fn intern(pool: &mut Vec<Laurent>, m: Laurent) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap / testing utility — build a RelKlInput directly from a full table
+// ---------------------------------------------------------------------------
+
+/// Build a [`RelKlInput`] (in [`MuPools::PerGen`] form) for a set of full-table
+/// elements, mirroring exactly what [`CellGraph::to_relkl`] (`wgraphtoklmat`)
+/// would produce for that set of vertices.
+///
+/// This is the **bootstrap bridge** used to validate `relklpols` (Task P4)
+/// without depending on the not-yet-built `klcells` driver: given a group's full
+/// [`KlTable`](crate::kl::KlTable) and a subset of element indices (typically a
+/// left cell of [`CellData::lcells`](crate::kl::CellData)), it produces the same
+/// `RelKlInput` that the cell's W-graph would yield.
+///
+/// The elements are ordered by `(length, canonical word)` — increasing length —
+/// matching the `RelKlInput::elms` contract.  For each Bruhat-ordered pair
+/// `(j, i)` (`i < j` in this order) with a non-zero table mu, the slot stores the
+/// per-generator pool indices of `eps · μ^s_{lo,hi}` where
+/// `eps = −(−1)^(ℓ_i+ℓ_j)` — exactly the value `wgraphtoklmat` stores, so
+/// `from_relkl(input)` recovers a [`CellGraph`] whose `mpols` m-values equal the
+/// raw table mu values.
+pub fn relkl_input_from_table(
+    g: &CoxeterGroup,
+    t: &crate::kl::KlTable,
+    cell: &[crate::element::ElmIdx],
+) -> RelKlInput {
+    use crate::element::ElmIdx;
+
+    let rank = g.rank;
+    // Order cell elements by (length, canonical word) — increasing length.
+    let mut elems: Vec<ElmIdx> = cell.to_vec();
+    elems.sort_by(|&a, &b| {
+        let wa = &t.elms.elms[a as usize];
+        let wb = &t.elms.elms[b as usize];
+        wa.len().cmp(&wb.len()).then_with(|| wa.cmp(wb))
+    });
+    let words: Vec<Word> = elems
+        .iter()
+        .map(|&e| t.elms.elms[e as usize].clone())
+        .collect();
+    let lens: Vec<usize> = words.iter().map(|w| w.len()).collect();
+
+    let n = elems.len();
+    let mut mues: Vec<Vec<Laurent>> = (0..rank)
+        .map(|_| vec![Laurent::zero(), Laurent::one()])
+        .collect();
+    let mut klmat: Vec<Vec<KlSlot>> = (0..n).map(|j| vec![None; j]).collect();
+
+    for j in 0..n {
+        for i in 0..j {
+            // Bruhat-ordered (lo < hi) by canonical index.
+            let (lo, hi) = {
+                let a = elems[i];
+                let b = elems[j];
+                if a < b {
+                    (a, b)
+                } else {
+                    (b, a)
+                }
+            };
+            if !t.bruhat_leq(lo, hi) {
+                continue;
+            }
+            let eps_neg = (lens[i] + lens[j]) % 2 == 0; // eps = -(-1)^p
+            let mut mu = vec![0u32; rank];
+            let mut any = false;
+            for s in 0..rank {
+                let muval = t.mu(s, lo, hi);
+                if muval.is_zero() {
+                    continue;
+                }
+                let m = if eps_neg { -&muval } else { muval };
+                mu[s] = intern(&mut mues[s], m);
+                any = true;
+            }
+            if any {
+                klmat[j][i] = Some(SlotData { mu });
+            }
+        }
+    }
+
+    RelKlInput {
+        elms: words,
+        klmat,
+        mpols: MuPools::PerGen(mues),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -587,77 +675,6 @@ mod tests {
         let opts = KlOpts::equal(group.rank);
         let table = klpolynomials_seq(&group, &opts).unwrap();
         (group, table)
-    }
-
-    /// Build a [`RelKlInput`] from a full KL table and a set of element indices,
-    /// mirroring what [`CellGraph::to_relkl`] would produce.
-    ///
-    /// The elements are taken in length-sorted (then canonical) order, matching
-    /// the `RelKlInput::elms` increasing-length contract.  For each Bruhat pair
-    /// `(j, i)` (`i < j` in this order) with any non-zero table mu, the slot
-    /// stores per-generator pool indices of `eps · μ^s_{y,w}` where
-    /// `eps = −(−1)^(ℓ_i+ℓ_j)`.  This is exactly the value `wgraphtoklmat`
-    /// stores, so `from_relkl(input)` recovers a CellGraph whose `mpols`
-    /// m-values equal the raw table mu values.
-    fn relkl_input_from_table(g: &CoxeterGroup, t: &KlTable, cell: &[ElmIdx]) -> RelKlInput {
-        let rank = g.rank;
-        // Order cell elements by (length, canonical word) — increasing length.
-        let mut elems: Vec<ElmIdx> = cell.to_vec();
-        elems.sort_by(|&a, &b| {
-            let wa = &t.elms.elms[a as usize];
-            let wb = &t.elms.elms[b as usize];
-            wa.len().cmp(&wb.len()).then_with(|| wa.cmp(wb))
-        });
-        let words: Vec<Word> = elems
-            .iter()
-            .map(|&e| t.elms.elms[e as usize].clone())
-            .collect();
-        let lens: Vec<usize> = words.iter().map(|w| w.len()).collect();
-
-        let n = elems.len();
-        let mut mues: Vec<Vec<Laurent>> = (0..rank)
-            .map(|_| vec![Laurent::zero(), Laurent::one()])
-            .collect();
-        let mut klmat: Vec<Vec<KlSlot>> = (0..n).map(|j| vec![None; j]).collect();
-
-        for j in 0..n {
-            for i in 0..j {
-                // Bruhat-ordered (y < w) by canonical index.
-                let (lo, hi) = {
-                    let a = elems[i];
-                    let b = elems[j];
-                    if a < b {
-                        (a, b)
-                    } else {
-                        (b, a)
-                    }
-                };
-                if !t.bruhat_leq(lo, hi) {
-                    continue;
-                }
-                let eps_neg = (lens[i] + lens[j]) % 2 == 0; // eps = -(-1)^p
-                let mut mu = vec![0u32; rank];
-                let mut any = false;
-                for s in 0..rank {
-                    let muval = t.mu(s, lo, hi);
-                    if muval.is_zero() {
-                        continue;
-                    }
-                    let m = if eps_neg { -&muval } else { muval };
-                    mu[s] = intern(&mut mues[s], m);
-                    any = true;
-                }
-                if any {
-                    klmat[j][i] = Some(SlotData { mu });
-                }
-            }
-        }
-
-        RelKlInput {
-            elms: words,
-            klmat,
-            mpols: MuPools::PerGen(mues),
-        }
     }
 
     /// Helper: the canonical word-set of every left cell of a full table.
