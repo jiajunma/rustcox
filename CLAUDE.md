@@ -11,6 +11,13 @@ for the oracle pipeline see `docs/VERIFICATION.md`; for HPC notes see
 
 ## Ground rules
 
+0. **NO local program execution (HARD RULE, user-mandated 2026-06-12).** Do
+   not run any programs on the local machine — no `cargo test`/`cargo run`,
+   no binaries, no benchmarks, no calibrations, no third-party tools (PyCox,
+   coxeter3, …). The local machine is for editing and git only. ALL execution
+   (tests, verification builds, experiments, oracle runs) happens on the XMU
+   HPC: light/interactive steps on the login node, anything heavy via SLURM
+   (`sbatch`). GitHub Actions CI is fine (not local).
 1. **The oracle is PyCox.** `pycox-ref/pycox_ref.py` is the normative
    reference; cited line numbers in the plan refer to that file. When in doubt
    about an algorithm, read the Python source — do not improvise mathematics.
