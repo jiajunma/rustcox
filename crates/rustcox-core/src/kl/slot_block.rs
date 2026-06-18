@@ -184,12 +184,6 @@ pub(super) fn block_from_dense(dense: &[Vec<SlotState>]) -> SparseBlock<SlotStat
     SparseBlock::with_rows(nc, rows)
 }
 
-/// Number of marked (present) slots across every row of the block.
-#[inline]
-pub(super) fn block_marked_count(block: &SparseBlock<SlotState>) -> usize {
-    block.count()
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -287,7 +281,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "u=1 not in present set")]
     fn block_index_mut_absent_panics() {
-        let dense: Vec<Vec<SlotState>> = vec![vec![SlotState::Pending, SlotState::Absent]];
+        // Square 2×2 grid: (0,0) = Pending (present), (0,1) = Absent (writing
+        // here must panic), (1,0) absent, (1,1) Pending.
+        let dense: Vec<Vec<SlotState>> = vec![
+            vec![SlotState::Pending, SlotState::Absent],
+            vec![SlotState::Absent, SlotState::Pending],
+        ];
         let mut block = block_from_dense(&dense);
         block[0][1] = SlotState::Done { rk: 1, mu: 1 };
     }

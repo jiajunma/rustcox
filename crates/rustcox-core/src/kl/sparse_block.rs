@@ -576,9 +576,9 @@ mod tests {
         let value_of = |v: usize, u: usize| -> i32 { (v as i32) - (u as i32) };
 
         let dense: Vec<Vec<Option<i32>>> = (0..nc)
-            .map(|v| {
+            .map(|v: usize| {
                 (0..nc)
-                    .map(|u| {
+                    .map(|u: usize| {
                         // ~30% density: hash and threshold.
                         let h = (v.wrapping_mul(2654435761) ^ u.wrapping_mul(40503)) & 0xff;
                         if h < 80 {
