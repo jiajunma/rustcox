@@ -64,9 +64,14 @@ use super::relkl_recur::{
     classify_block, compute_caseb_block, diag_block_mu, intern, relmue, CaseBBlock, Cu, Cx,
     LayerCtx, Lft, SlotState, XBlockKind,
 };
+use super::slot_block::{block_to_dense, build_block};
+use super::sparse_block::SparseBlock;
 
-/// The working KL matrix: present blocks `(y, x)` → an `nc×nc` slot grid.
-type Mat = HashMap<(Cx, Cx), Vec<Vec<SlotState>>>;
+/// The working KL matrix: present blocks `(y, x)` → a sparse `nc × nc`
+/// `SlotState` grid.  Absent slots cost no storage; see
+/// [`super::slot_block`] for the dense-equivalent `[v][u]` indexing semantics
+/// preserved by specialised `Index` / `IndexMut` impls (issue #13).
+type Mat = HashMap<(Cx, Cx), SparseBlock<SlotState>>;
 
 // ---------------------------------------------------------------------------
 // Public options + output
@@ -457,43 +462,61 @@ fn relklpols_inner(
     let bx = |y: Cx, x: Cx| -> bool { x <= y && bruhat_x[y][x] };
 
     // --- Matrix init ---------------------------------------------------------
-    // mat[(y,x)] = nc×nc grid of SlotState; only (y,x) with bruhatX present.
-    // Diagonal blocks (y,y) always present.  Factored into a closure so the
-    // resume path can rebuild the deterministic post-init state cheaply when a
-    // stale/corrupt log must be discarded.  Returns `(mat, mues)`.
+    // mat[(y,x)] = sparse nc × nc grid of SlotState; only (y,x) with
+    // bruhatX present.  Off-diagonals: positions where
+    // `lw[x] + lw1[u] < lw[y] + lw1[v]` are inserted into the bitmap as
+    // `Pending` — every other (v, u) is absent (no storage).  Diagonal
+    // blocks (y,y): the lower triangle and the main diagonal are inserted as
+    // `Done`; the upper triangle is absent.  Factored into a closure so the
+    // resume path can rebuild the deterministic post-init state cheaply when
+    // a stale/corrupt log must be discarded.  Returns `(mat, mues)`.
+    //
+    // Sparsity: this preserves the exact set of "marked" slots that the dense
+    // implementation tracked via `SlotState::Pending` / `SlotState::Done`;
+    // only the `Absent` slots vanish from storage.  Determinism contract: the
+    // Phase 2 sequential intern walks `(v, u)` in dense ascending order via
+    // `SparseRow`'s `Index<usize>` impl (absent slots return a static
+    // `&SlotState::Absent` reference), so `rklpols` pool insertion order is
+    // byte-identical to the dense reference.  See issue #13.
     let build_init = || -> (Mat, Vec<Laurent>) {
         let mut mues: Vec<Laurent> = vec![Laurent::zero(), Laurent::one()];
         let mut mat: Mat = HashMap::new();
         for y in 0..nx {
             for x in 0..y {
                 if bx(y, x) {
-                    let mut grid = vec![vec![SlotState::Absent; nc]; nc];
-                    for v in 0..nc {
-                        for u in 0..nc {
-                            // PyCox: (x==y and u==v) or Lw[x]+Lw1[u] < Lw[y]+Lw1[v].
-                            // Here x<y so the first disjunct is false.
-                            if lw[x] + lw1[u] < lw[y] + lw1[v] {
-                                grid[v][u] = SlotState::Pending;
-                            }
-                        }
-                    }
-                    mat.insert((y, x), grid);
+                    let block = build_block(
+                        nc,
+                        |v, u| lw[x] + lw1[u] < lw[y] + lw1[v],
+                        |_v, _u| SlotState::Pending,
+                    );
+                    mat.insert((y, x), block);
                 }
             }
-            // Diagonal block (y,y): copied from cell1.
-            let mut diag = vec![vec![SlotState::Absent; nc]; nc];
+            // Diagonal block (y,y): copied from cell1.  Two pass walk: first
+            // intern the per-cell mu values into `mues` (the deterministic
+            // walk order matches the dense version below), THEN materialize
+            // the resulting `Done` states into a sparse block whose present
+            // set is exactly the (i, jj) pairs that hold a non-`Absent`
+            // value in the dense reference.
+            let mut diag_done: Vec<Vec<Option<SlotState>>> =
+                (0..nc).map(|_| vec![None; nc]).collect();
             for i in 0..nc {
                 for jj in 0..i {
                     if let Some(slot) = cell1.klmat[i][jj].as_ref() {
                         // PyCox: mat[y,y][i][j]='c0'; then read the FIRST generator
                         // r with a non-''/'0' slot index; intern its mu into mues.
                         let mu_idx = diag_block_mu(slot, &cell1.mpols, &mut mues);
-                        diag[i][jj] = SlotState::Done { rk: 0, mu: mu_idx };
+                        diag_done[i][jj] = Some(SlotState::Done { rk: 0, mu: mu_idx });
                     }
                 }
                 // Diagonal of diagonal: 'c1c0' → rk=1 (one), mu=0 (zero).
-                diag[i][i] = SlotState::Done { rk: 1, mu: 0 };
+                diag_done[i][i] = Some(SlotState::Done { rk: 1, mu: 0 });
             }
+            let diag = build_block(
+                nc,
+                |v, u| diag_done[v][u].is_some(),
+                |v, u| diag_done[v][u].expect("present predicate guards"),
+            );
             mat.insert((y, y), diag);
         }
         (mat, mues)
@@ -702,8 +725,15 @@ fn relklpols_inner(
         if let Some(wr) = log_writer.as_mut() {
             let is_last = y + 1 == nx;
             if is_last || (y + 1) % every_layers == 0 {
-                let blocks: Vec<(Cx, Vec<Vec<SlotState>>)> =
-                    xs.iter().map(|&(x, _)| (x, mat[&(y, x)].clone())).collect();
+                // Q4 layer log retains the dense `Vec<Vec<SlotState>>`
+                // on-disk format for the moment; we expand each finalised
+                // block to a dense grid for serialisation.  Bumping
+                // `BLK_VERSION` to a packed sparse format is the issue #13
+                // follow-up (task #7) and will land separately.
+                let blocks: Vec<(Cx, Vec<Vec<SlotState>>)> = xs
+                    .iter()
+                    .map(|&(x, _)| (x, block_to_dense(&mat[&(y, x)])))
+                    .collect();
                 let rec = LayerRecord {
                     y,
                     blocks,
@@ -819,25 +849,32 @@ fn relklpols_inner(
     };
 
     // --- Stats: slot occupancy over every present working block --------------
-    // (absent vs completed-zero vs completed-nonzero) + peak block-memory.  Each
-    // present block is `nc×nc` slots; `Pending` should not survive a completed
-    // wavefront and is counted as `absent` defensively.
+    // (absent vs completed-zero vs completed-nonzero) + peak block-memory.
+    // Sparse iteration: only the bitmap-marked (`Pending` or `Done`) slots
+    // are visited; unmarked slots are inferred to be `Absent` and counted
+    // by subtraction from the dense-equivalent total `nc² × present_blocks`.
+    // `Pending` should not survive a completed wavefront and is counted as
+    // `absent` defensively.
     let mut stats = RelKlStats::default();
     let mut present_blocks: u64 = 0;
+    let mut marked_visited: u64 = 0;
     for grid in mat.values() {
         present_blocks += 1;
-        for row in grid {
-            for slot in row {
+        for row in &grid.rows {
+            for (_, slot) in row.iter() {
+                marked_visited += 1;
                 match slot {
                     SlotState::Done { rk, .. } if *rk != 0 => stats.nonzero += 1,
                     SlotState::Done { .. } => stats.zero += 1,
-                    _ => stats.absent += 1,
+                    _ => stats.absent += 1, // stray Pending — defensive
                 }
             }
         }
     }
+    let dense_total = present_blocks * (nc as u64) * (nc as u64);
+    stats.absent += dense_total.saturating_sub(marked_visited);
     let slot_bytes = std::mem::size_of::<SlotState>() as u64;
-    stats.peak_block_bytes = present_blocks * (nc as u64) * (nc as u64) * slot_bytes;
+    stats.peak_block_bytes = dense_total * slot_bytes;
 
     // --- Clean completion: drop the block log (bounded disk) -----------------
     // The writer is dropped first (closing the file handle), then both files are

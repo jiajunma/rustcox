@@ -494,15 +494,20 @@ pub(super) fn load_and_replay(
 /// Overwrites each block `(y, x)` with its finalized grid and appends each
 /// layer's pool deltas in order.  Returns the next layer index to compute and
 /// validates the final pool sizes against the header.
+///
+/// The on-disk Q4 log retains the dense `Vec<Vec<SlotState>>` block format
+/// (BLK_VERSION 1); each replayed block is repacked into a sparse
+/// `SparseBlock<SlotState>` here.  Bumping the on-disk format to packed
+/// sparse blocks is the issue #13 follow-up (task #7).
 pub(super) fn apply_replay(
     state: &ReplayState,
-    mat: &mut HashMap<(Cx, Cx), Vec<Vec<SlotState>>>,
+    mat: &mut HashMap<(Cx, Cx), super::sparse_block::SparseBlock<SlotState>>,
     rklpols: &mut Vec<Laurent>,
     mues: &mut Vec<Laurent>,
 ) -> io::Result<usize> {
     for layer in &state.layers {
         for (x, grid) in &layer.blocks {
-            mat.insert((layer.y, *x), grid.clone());
+            mat.insert((layer.y, *x), super::slot_block::block_from_dense(grid));
         }
         rklpols.extend(layer.rklpols_delta.iter().cloned());
         mues.extend(layer.mues_delta.iter().cloned());

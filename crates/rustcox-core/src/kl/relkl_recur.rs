@@ -14,6 +14,8 @@ use crate::{
     laurent::Laurent,
 };
 
+use super::sparse_block::SparseBlock;
+
 // ---------------------------------------------------------------------------
 // Index-space type aliases (naming discipline; not full newtypes to keep the
 // arithmetic-heavy recursion readable, but every binding is named per space).
@@ -237,7 +239,7 @@ pub(super) struct LayerCtx<'a> {
     pub bx: &'a [Vec<bool>],
     pub lft: &'a [Vec<Lft>],
     pub lft1: &'a [Vec<i64>],
-    pub mat: &'a HashMap<(Cx, Cx), Vec<Vec<SlotState>>>,
+    pub mat: &'a HashMap<(Cx, Cx), SparseBlock<SlotState>>,
     pub mues: &'a [Laurent],
     pub rklpols: &'a [Laurent],
     pub cell1: &'a RelKlInput,
@@ -252,7 +254,7 @@ pub(super) struct LayerCtx<'a> {
 pub(super) fn compute_caseb_block(
     ctx: &LayerCtx<'_>,
     x: Cx,
-    marks: &[Vec<SlotState>],
+    marks: &SparseBlock<SlotState>,
 ) -> CaseBBlock {
     let nc = ctx.nc;
     let y = ctx.y;
@@ -332,7 +334,7 @@ pub(super) struct CaseBCtx<'a> {
     pub bx: &'a [Vec<bool>],
     pub lft: &'a [Vec<Lft>],
     pub lft1: &'a [Vec<i64>],
-    pub mat: &'a HashMap<(Cx, Cx), Vec<Vec<SlotState>>>,
+    pub mat: &'a HashMap<(Cx, Cx), SparseBlock<SlotState>>,
     pub mues: &'a [Laurent],
     pub rklpols: &'a [Laurent],
     pub cell1: &'a RelKlInput,

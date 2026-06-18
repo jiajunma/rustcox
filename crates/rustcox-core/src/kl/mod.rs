@@ -15,6 +15,7 @@ pub mod relkl;
 pub mod relkl_ckpt;
 mod relkl_recur;
 pub(crate) mod scc;
+mod slot_block;
 pub mod sparse_block;
 pub mod table;
 pub use cells::CellData;
