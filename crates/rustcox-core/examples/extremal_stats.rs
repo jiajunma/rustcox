@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use rustcox_core::{
     element::{ElmIdx, Perm},
     group::CoxeterGroup,
-    kl::{klpolynomials, KlOpts},
+    kl::{desc_mask, is_extremal, klpolynomials, push_to_extremal, KlOpts, PushCtx},
     laurent::Laurent,
 };
 
@@ -87,7 +87,6 @@ fn run(typ: &str) {
     // because: w·s = (s^{-1} · w^{-1})^{-1} = (s · w^{-1})^{-1}
     // (s is an involution, so s^{-1}=s)
     // Precompute a flat right-mult table: rft[w * rank + s] = index of w·s.
-    // rft(w, s) = inva[ lft( inva[w], s ) ].
     let rft: Vec<ElmIdx> = {
         let inva = &table.elms.inva;
         let lft = &table.elms.lft;
@@ -102,20 +101,12 @@ fn run(typ: &str) {
             .collect()
     };
 
-    // Inline accessor (uses rft by shared ref — no capture ownership needed).
-    let rft_of = |w: ElmIdx, s: usize| -> ElmIdx { rft[w as usize * rank + s] };
-
-    // Take a reference to the lft slice so closures can borrow it without
-    // moving table.elms.
-    let lft_slice: &[ElmIdx] = &table.elms.lft;
-
     let push_ctx = PushCtx {
         left_desc: &left_desc,
         right_desc: &right_desc,
-        lft: lft_slice,
-        rft_of: &rft_of,
+        lft: &table.elms.lft,
+        rft: &rft,
         rank,
-        table: &table,
     };
 
     // --- B3 reduction-identity verification ---
@@ -201,92 +192,7 @@ fn run(typ: &str) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Convert a slice of generator indices into a bitmask.
-#[inline]
-fn desc_mask(gens: &[u8]) -> u64 {
-    gens.iter().fold(0u64, |acc, &g| acc | (1u64 << g))
-}
-
-/// Return `true` iff `L(w) ⊆ L(y)` and `R(w) ⊆ R(y)`.
-#[inline]
-fn is_extremal(y: ElmIdx, w: ElmIdx, left_desc: &[u64], right_desc: &[u64]) -> bool {
-    let lw = left_desc[w as usize];
-    let rw = right_desc[w as usize];
-    let ly = left_desc[y as usize];
-    let ry = right_desc[y as usize];
-    // L(w) ⊆ L(y)  ⟺  lw & ~ly == 0
-    // R(w) ⊆ R(y)  ⟺  rw & ~ry == 0
-    (lw & !ly == 0) && (rw & !ry == 0)
-}
-
-/// Shared context for [`push_to_extremal`] (avoids too-many-arguments lint).
-struct PushCtx<'a, F> {
-    left_desc: &'a [u64],
-    right_desc: &'a [u64],
-    lft: &'a [ElmIdx],
-    rft_of: F,
-    rank: usize,
-    table: &'a rustcox_core::kl::table::KlTable,
-}
-
-/// Push `y` upward through descents of `w` until the extremal fixpoint.
-///
-/// For each `s ∈ L(w)` with `s·y > y` (i.e. `s ∉ L(y)`): replace `y ← s·y`.
-/// For each `s ∈ R(w)` with `y·s > y` (i.e. `s ∉ R(y)`): replace `y ← y·s`.
-/// Repeat until no further push is possible.
-///
-/// The result `y'` satisfies:
-/// - `y' ≤_B w` (Bruhat; maintained because s-pushes only go upward)
-/// - `y'` is extremal for `w`
-/// - `P_{y,w} = P_{y',w}` (by the reduction identity, verified on B3)
-fn push_to_extremal<F: Fn(ElmIdx, usize) -> ElmIdx>(
-    mut y: ElmIdx,
-    w: ElmIdx,
-    ctx: &PushCtx<'_, F>,
-) -> ElmIdx {
-    let lw = ctx.left_desc[w as usize];
-    let rw = ctx.right_desc[w as usize];
-    loop {
-        // Try a left-push: pick any s ∈ L(w) with s ∉ L(y).
-        let lmask = lw & !ctx.left_desc[y as usize];
-        if lmask != 0 {
-            let s = lmask.trailing_zeros() as usize;
-            // s·y: use lft table; lft(y,s) > y since s ∉ L(y).
-            let sy = ctx.lft[y as usize * ctx.rank + s];
-            debug_assert!(
-                sy > y,
-                "push_to_extremal: expected sy>y but sy={sy} y={y} s={s}"
-            );
-            // sy ≤ w must hold by the KL reduction lemma.
-            assert!(
-                ctx.table.bruhat_leq(sy, w),
-                "push_to_extremal: sy={sy} not ≤ w={w} for s={s} y={y}"
-            );
-            y = sy;
-            continue; // restart with fresh masks
-        }
-        // Try a right-push: pick any s ∈ R(w) with s ∉ R(y).
-        let rmask = rw & !ctx.right_desc[y as usize];
-        if rmask != 0 {
-            let s = rmask.trailing_zeros() as usize;
-            let ys = (ctx.rft_of)(y, s);
-            debug_assert!(
-                ys > y,
-                "push_to_extremal: expected ys>y but ys={ys} y={y} s={s}"
-            );
-            assert!(
-                ctx.table.bruhat_leq(ys, w),
-                "push_to_extremal: ys={ys} not ≤ w={w} for s={s} y={y}"
-            );
-            y = ys;
-            continue;
-        }
-        // Neither kind of push was possible — fixpoint reached.
-        break;
-    }
-    y
-}
+// Helpers (`desc_mask`, `is_extremal`, `push_to_extremal`, `PushCtx`) live in
+// `rustcox_core::kl::extremal` (see issue #12 / plan
+// `docs/superpowers/plans/2026-06-18-memory-compression-relkl.md`) so the
+// `relklpols` memory compression refactor can reuse them.
