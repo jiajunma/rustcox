@@ -15,9 +15,11 @@ pub mod relkl;
 pub mod relkl_ckpt;
 mod relkl_recur;
 pub(crate) mod scc;
+pub mod sparse_block;
 pub mod table;
 pub use cells::CellData;
 pub use extremal::{desc_mask, is_extremal, push_to_extremal, PushCtx};
+pub use sparse_block::{BitMask, SparseBlock, SparseRow};
 pub use checkpoint::{Checkpoint, CheckpointCfg};
 pub use compute::klpolynomials_seq;
 pub use klcells::{
