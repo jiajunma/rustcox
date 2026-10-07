@@ -14,7 +14,10 @@ fn compare(spec: &str, intervals: bool) {
     };
     let compact = compute(&g, &opts).unwrap();
     assert_eq!(compact.elms, reference.elms, "element order: {spec}");
-    assert_eq!(compact.pols, reference.pols, "polynomial pool order: {spec}");
+    assert_eq!(
+        compact.pols, reference.pols,
+        "polynomial pool order: {spec}"
+    );
     let n = reference.n() as u32;
     for w in 0..n {
         for y in 0..=w {
@@ -36,7 +39,9 @@ fn compare(spec: &str, intervals: bool) {
 
 #[test]
 fn compact_matches_reference_small() {
-    for spec in ["A1", "A2", "A3", "A4", "B2", "B3", "B4", "D4", "H3", "I5", "A2xA1"] {
+    for spec in [
+        "A1", "A2", "A3", "A4", "B2", "B3", "B4", "D4", "H3", "I5", "A2xA1",
+    ] {
         compare(spec, false);
     }
 }

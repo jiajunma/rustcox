@@ -58,8 +58,12 @@ impl SmallGraph {
                     let mut us = Vec::new();
                     let mut ds = Vec::new();
                     for (j, &sj) in sig.iter().enumerate() {
-                        if up[i] & (1u64 << j) != 0 { us.push(sj); }
-                        if down[i] & (1u64 << j) != 0 { ds.push(sj); }
+                        if up[i] & (1u64 << j) != 0 {
+                            us.push(sj);
+                        }
+                        if down[i] & (1u64 << j) != 0 {
+                            ds.push(sj);
+                        }
                     }
                     us.sort_unstable();
                     ds.sort_unstable();
@@ -70,7 +74,13 @@ impl SmallGraph {
         let mut profile = sig.clone();
         profile.sort_unstable();
         let key = hash(&(n, profile));
-        Self { levels, up, down, sig, key }
+        Self {
+            levels,
+            up,
+            down,
+            sig,
+            key,
+        }
     }
 
     fn accounted_bytes(&self) -> usize {
@@ -88,14 +98,25 @@ pub(super) struct IntervalCache {
 
 impl IntervalCache {
     pub fn new(limits: IntervalLimits) -> Self {
-        Self { limits, entries: Vec::new(), buckets: HashMap::new(), bytes: 0 }
+        Self {
+            limits,
+            entries: Vec::new(),
+            buckets: HashMap::new(),
+            bytes: 0,
+        }
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn bytes(&self) -> usize { self.bytes }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
 
     pub fn build(&self, t: &CompactKlTable, bottom: u32, top: u32) -> Option<SmallGraph> {
-        if self.limits.max_bytes == 0 || self.limits.max_vertices < 2 { return None; }
+        if self.limits.max_bytes == 0 || self.limits.max_vertices < 2 {
+            return None;
+        }
         let cap = self.limits.max_vertices.min(64);
         let mut members = vec![top];
         let mut cursor = 0;
@@ -103,21 +124,32 @@ impl IntervalCache {
         while cursor < members.len() {
             let z = members[cursor];
             cursor += 1;
-            if z == bottom { continue; }
+            if z == bottom {
+                continue;
+            }
             for &a in t.rows[z as usize].covers.iter() {
                 work += 1;
-                if work > self.limits.max_walk_edges { return None; }
+                if work > self.limits.max_walk_edges {
+                    return None;
+                }
                 if t.leq(bottom, a) && !members.contains(&a) {
-                    if members.len() == cap { return None; }
+                    if members.len() == cap {
+                        return None;
+                    }
                     members.push(a);
                 }
             }
         }
         members.sort_unstable();
-        if members.first().copied() != Some(bottom) { return None; }
+        if members.first().copied() != Some(bottom) {
+            return None;
+        }
         let n = members.len();
         let base = t.elms.lengths[bottom as usize];
-        let levels = members.iter().map(|&a| t.elms.lengths[a as usize] - base).collect();
+        let levels = members
+            .iter()
+            .map(|&a| t.elms.lengths[a as usize] - base)
+            .collect();
         let mut up = vec![0; n];
         let mut down = vec![0; n];
         for (j, &b) in members.iter().enumerate() {
@@ -138,8 +170,11 @@ impl IntervalCache {
             let (other, id) = &self.entries[i];
             match exact_isomorphism(g, other, &mut budget) {
                 Some(true) => return Some(*id),
-                Some(false) => {},
-                None => { stats.interval_search_aborts += 1; return None; },
+                Some(false) => {}
+                None => {
+                    stats.interval_search_aborts += 1;
+                    return None;
+                }
             }
         }
         None
@@ -147,8 +182,13 @@ impl IntervalCache {
 
     pub fn insert(&mut self, g: SmallGraph, id: u32) {
         let cost = g.accounted_bytes();
-        if cost > self.limits.max_bytes.saturating_sub(self.bytes) { return; }
-        self.buckets.entry(g.key).or_default().push(self.entries.len());
+        if cost > self.limits.max_bytes.saturating_sub(self.bytes) {
+            return;
+        }
+        self.buckets
+            .entry(g.key)
+            .or_default()
+            .push(self.entries.len());
         self.entries.push((g, id));
         self.bytes += cost;
     }
@@ -158,21 +198,36 @@ impl IntervalCache {
 /// AND all nonedges, and explicitly preserving levels (hashes may collide).
 fn exact_isomorphism(a: &SmallGraph, b: &SmallGraph, budget: &mut usize) -> Option<bool> {
     let n = a.levels.len();
-    if n != b.levels.len() { return Some(false); }
+    if n != b.levels.len() {
+        return Some(false);
+    }
     let candidates: Vec<u64> = (0..n)
-        .map(|i| (0..n).fold(0, |mask, j| {
-            if a.levels[i] == b.levels[j]
-                && a.sig[i] == b.sig[j]
-                && a.up[i].count_ones() == b.up[j].count_ones()
-                && a.down[i].count_ones() == b.down[j].count_ones()
-            { mask | (1u64 << j) } else { mask }
-        }))
+        .map(|i| {
+            (0..n).fold(0, |mask, j| {
+                if a.levels[i] == b.levels[j]
+                    && a.sig[i] == b.sig[j]
+                    && a.up[i].count_ones() == b.up[j].count_ones()
+                    && a.down[i].count_ones() == b.down[j].count_ones()
+                {
+                    mask | (1u64 << j)
+                } else {
+                    mask
+                }
+            })
+        })
         .collect();
-    if candidates.contains(&0) { return Some(false); }
+    if candidates.contains(&0) {
+        return Some(false);
+    }
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by_key(|&i| candidates[i].count_ones());
     let mut mapping = vec![0usize; n];
-    let ctx = Search { a, b, candidates: &candidates, order: &order };
+    let ctx = Search {
+        a,
+        b,
+        candidates: &candidates,
+        order: &order,
+    };
     search(&ctx, 0, 0, &mut mapping, budget)
 }
 
@@ -183,12 +238,22 @@ struct Search<'a> {
     order: &'a [usize],
 }
 
-fn search(ctx: &Search<'_>, depth: usize, used: u64, mapping: &mut [usize], budget: &mut usize) -> Option<bool> {
-    if depth == ctx.order.len() { return Some(true); }
+fn search(
+    ctx: &Search<'_>,
+    depth: usize,
+    used: u64,
+    mapping: &mut [usize],
+    budget: &mut usize,
+) -> Option<bool> {
+    if depth == ctx.order.len() {
+        return Some(true);
+    }
     let i = ctx.order[depth];
     let mut cands = ctx.candidates[i] & !used;
     while cands != 0 {
-        if *budget == 0 { return None; }
+        if *budget == 0 {
+            return None;
+        }
         *budget -= 1;
         let j = cands.trailing_zeros() as usize;
         cands &= cands - 1;
@@ -197,11 +262,13 @@ fn search(ctx: &Search<'_>, depth: usize, used: u64, mapping: &mut [usize], budg
             ((ctx.a.up[i] >> k) & 1) == ((ctx.b.up[j] >> mk) & 1)
                 && ((ctx.a.down[i] >> k) & 1) == ((ctx.b.down[j] >> mk) & 1)
         });
-        if !consistent { continue; }
+        if !consistent {
+            continue;
+        }
         mapping[i] = j;
         match search(ctx, depth + 1, used | (1u64 << j), mapping, budget) {
             Some(true) => return Some(true),
-            Some(false) => {},
+            Some(false) => {}
             None => return None,
         }
     }

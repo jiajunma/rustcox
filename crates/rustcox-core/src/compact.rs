@@ -12,8 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 
 use crate::{
-    element::ElmIdx, enumerate::ElementTable, group::CoxeterGroup, kl::KlError,
-    laurent::Laurent,
+    element::ElmIdx, enumerate::ElementTable, group::CoxeterGroup, kl::KlError, laurent::Laurent,
 };
 use interval_cache::IntervalCache;
 pub use interval_cache::IntervalLimits;
@@ -166,8 +165,16 @@ impl CompactKlTable {
     pub fn storage(&self) -> CompactStorage {
         CompactStorage {
             bruhat_words_bytes: self.rows.iter().map(|r| r.below.len() * 8).sum(),
-            extremal_ids_bytes: self.rows.iter().map(|r| r.nontrivial.len() * size_of::<(ElmIdx, u32)>()).sum(),
-            mu_support_bytes: self.rows.iter().map(|r| r.mu.len() * size_of::<(ElmIdx, i64)>()).sum(),
+            extremal_ids_bytes: self
+                .rows
+                .iter()
+                .map(|r| r.nontrivial.len() * size_of::<(ElmIdx, u32)>())
+                .sum(),
+            mu_support_bytes: self
+                .rows
+                .iter()
+                .map(|r| r.mu.len() * size_of::<(ElmIdx, i64)>())
+                .sum(),
             covers_bytes: self.rows.iter().map(|r| r.covers.len() * 4).sum(),
             row_headers_bytes: self.rows.capacity() * size_of::<Row>(),
             polynomial_coeff_payload_bytes: self.pols.iter().map(|p| p.coeffs().len() * 8).sum(),
@@ -199,10 +206,13 @@ impl PoolIndex {
 /// Compute all ordinary, equal-parameter KL values in compact form.
 pub fn compute(group: &CoxeterGroup, opts: &CompactOpts) -> Result<CompactKlTable, KlError> {
     if group.rank > 64 {
-        return Err(KlError::Unimplemented("compact descent masks require rank <= 64"));
+        return Err(KlError::Unimplemented(
+            "compact descent masks require rank <= 64",
+        ));
     }
     let n = u32::try_from(group.order)
-        .map_err(|_| KlError::Internal("compact element IDs exceed u32".into()))? as u128;
+        .map_err(|_| KlError::Internal("compact element IDs exceed u32".into()))?
+        as u128;
     // Upper bound for sum_w ceil((w+1)/64) * 8, including row padding.
     let bound = (n * (n + 1) / 2 + 63 * n) / 64 * 8;
     if bound > opts.max_bruhat_bytes as u128 {
@@ -214,7 +224,11 @@ pub fn compute(group: &CoxeterGroup, opts: &CompactOpts) -> Result<CompactKlTabl
     let elms = ElementTable::build(group);
     let n = elms.len();
     let left: Vec<u64> = (0..n)
-        .map(|w| (0..group.rank).fold(0, |m, s| m | (u64::from(elms.lft(w as u32, s) < w as u32) << s)))
+        .map(|w| {
+            (0..group.rank).fold(0, |m, s| {
+                m | (u64::from(elms.lft(w as u32, s) < w as u32) << s)
+            })
+        })
         .collect();
     let right = elms.inva.iter().map(|&iw| left[iw as usize]).collect();
     let mut table = CompactKlTable {
@@ -238,7 +252,9 @@ pub fn compute(group: &CoxeterGroup, opts: &CompactOpts) -> Result<CompactKlTabl
     for w in 1..n as u32 {
         let s = table.left[w as usize].trailing_zeros() as usize;
         let sw = table.elms.lft(w, s);
-        table.rows.push(skeleton(&table, w, s, group.n_pos, cache.is_some()));
+        table
+            .rows
+            .push(skeleton(&table, w, s, group.n_pos, cache.is_some()));
         let mut current = vec![MISSING; w as usize + 1];
         current[w as usize] = 0;
         let mut nontrivial = Vec::new();
@@ -256,10 +272,16 @@ pub fn compute(group: &CoxeterGroup, opts: &CompactOpts) -> Result<CompactKlTabl
                     if table.rows[sw as usize].mu.len() >= c.limits.min_mu_candidates {
                         stats.interval_attempts += 1;
                         let g = c.build(&table, y, w);
-                        if g.is_none() { stats.interval_build_aborts += 1; }
+                        if g.is_none() {
+                            stats.interval_build_aborts += 1;
+                        }
                         g
-                    } else { None }
-                } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 let cached = match (cache.as_mut(), graph.as_ref()) {
                     (Some(c), Some(g)) => c.lookup(g, &mut stats),
                     _ => None,
@@ -270,20 +292,26 @@ pub fn compute(group: &CoxeterGroup, opts: &CompactOpts) -> Result<CompactKlTabl
                 } else {
                     let h = recurrence(&table, y, w, s, &mut stats);
                     let id = index.intern(&mut table.pols, h);
-                    if let (Some(c), Some(g)) = (cache.as_mut(), graph) { c.insert(g, id); }
+                    if let (Some(c), Some(g)) = (cache.as_mut(), graph) {
+                        c.insert(g, id);
+                    }
                     id
                 }
             };
             debug_assert_ne!(id, MISSING);
             current[y as usize] = id;
             let extremal = table.extremal(y, w);
-            if extremal && id != 0 { nontrivial.push((y, id)); }
+            if extremal && id != 0 {
+                nontrivial.push((y, id));
+            }
             let gap = table.elms.lengths[w as usize] - table.elms.lengths[y as usize];
             // Non-extremal pairs with gap > 1 have mu=0 by the descent reduction
             // plus the degree bound. The ORIGINAL gap must be used here.
             if gap == 1 || (extremal && gap % 2 == 1) {
                 let m = table.pols[id as usize].coeff(gap as i32 - 1);
-                if m != 0 { mu.push((y, m)); }
+                if m != 0 {
+                    mu.push((y, m));
+                }
             }
         }
         nontrivial.reverse();
@@ -306,9 +334,11 @@ fn skeleton(t: &CompactKlTable, w: u32, s: usize, n_pos: u32, covers: bool) -> R
     let mut cv = Vec::new();
     for y in 0..=w {
         let ly = t.elms.lengths[y as usize];
-        let yes = if y == 0 || y == w { true }
-        else if ly == lw { false }
-        else if lw + ly > n_pos {
+        let yes = if y == 0 || y == w {
+            true
+        } else if ly == lw {
+            false
+        } else if lw + ly > n_pos {
             t.leq(t.elms.aw0[w as usize], t.elms.aw0[y as usize])
         } else {
             let sy = t.elms.lft(y, s);
@@ -316,18 +346,35 @@ fn skeleton(t: &CompactKlTable, w: u32, s: usize, n_pos: u32, covers: bool) -> R
         };
         if yes {
             below[y as usize / 64] |= 1u64 << (y % 64);
-            if covers && ly + 1 == lw { cv.push(y); }
+            if covers && ly + 1 == lw {
+                cv.push(y);
+            }
         }
     }
-    Row { below: below.into_boxed_slice(), nontrivial: Box::new([]), mu: Box::new([]), covers: cv.into_boxed_slice() }
+    Row {
+        below: below.into_boxed_slice(),
+        nontrivial: Box::new([]),
+        mu: Box::new([]),
+        covers: cv.into_boxed_slice(),
+    }
 }
 
-fn shortcut(t: &CompactKlTable, cur: &[u32], y: u32, w: u32, stats: &mut CompactStats) -> Option<u32> {
+fn shortcut(
+    t: &CompactKlTable,
+    cur: &[u32],
+    y: u32,
+    w: u32,
+    stats: &mut CompactStats,
+) -> Option<u32> {
     let iw = t.elms.inva[w as usize];
     let iy = t.elms.inva[y as usize];
     if iw < w || (iw == w && iy > y) {
         stats.inverse_hits += 1;
-        return if iw == w { Some(cur[iy as usize]) } else { t.pol_id(iy, iw) };
+        return if iw == w {
+            Some(cur[iy as usize])
+        } else {
+            t.pol_id(iy, iw)
+        };
     }
     let left = t.left[w as usize] & !t.left[y as usize];
     if left != 0 {
@@ -351,12 +398,18 @@ fn recurrence(t: &CompactKlTable, y: u32, w: u32, s: usize, stats: &mut CompactS
     let sw = t.elms.lft(w, s);
     let sy = t.elms.lft(y, s);
     let mut h = t.pol(sy, sw).expect("recurrence base comparable").clone();
-    if let Some(p) = t.pol(y, sw) { h += &p.shifted(2); }
+    if let Some(p) = t.pol(y, sw) {
+        h += &p.shifted(2);
+    }
     stats.legacy_z_candidates += u64::from(sw.saturating_sub(y));
     for &(z, m) in t.rows[sw as usize].mu.iter().rev() {
-        if z < y { break; }
+        if z < y {
+            break;
+        }
         stats.sparse_mu_candidates += 1;
-        if t.left[z as usize] & (1u64 << s) == 0 || !t.leq(y, z) { continue; }
+        if t.left[z as usize] & (1u64 << s) == 0 || !t.leq(y, z) {
+            continue;
+        }
         let p = t.pol(y, z).expect("mu contribution comparable");
         let shift = (t.elms.lengths[w as usize] - t.elms.lengths[z as usize]) as i32;
         h -= &p.shift_scaled(shift, m);

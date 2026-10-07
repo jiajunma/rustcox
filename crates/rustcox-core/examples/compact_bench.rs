@@ -22,7 +22,11 @@ enum Backend {
 fn peak_rss_kib() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/status").ok()?;
     text.lines().find_map(|line| {
-        line.strip_prefix("VmHWM:")?.split_whitespace().next()?.parse().ok()
+        line.strip_prefix("VmHWM:")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
     })
 }
 
@@ -43,7 +47,9 @@ fn dump(
     for p in pols {
         out.write_all(&p.val().to_le_bytes())?;
         out.write_all(&(p.coeffs().len() as u32).to_le_bytes())?;
-        for c in p.coeffs() { out.write_all(&c.to_le_bytes())?; }
+        for c in p.coeffs() {
+            out.write_all(&c.to_le_bytes())?;
+        }
     }
     let mut row = Vec::with_capacity(elms.len() * 4);
     for w in 0..elms.len() as u32 {
@@ -65,20 +71,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let engine = match args[1].as_str() {
         "reference" => Backend::Reference(klpolynomials_seq(&group, &KlOpts::equal(group.rank))?),
-        "compact" | "interval" => Backend::Compact(compute(&group, &CompactOpts {
-            intervals: (args[1] == "interval").then(IntervalLimits::default),
-            ..CompactOpts::default()
-        })?),
+        "compact" | "interval" => Backend::Compact(compute(
+            &group,
+            &CompactOpts {
+                intervals: (args[1] == "interval").then(IntervalLimits::default),
+                ..CompactOpts::default()
+            },
+        )?),
         _ => return Err("engine must be reference, compact, or interval".into()),
     };
     let seconds = start.elapsed().as_secs_f64();
     let (n, npols, stats, storage) = match &engine {
         Backend::Reference(t) => {
             let pol_bytes: usize = t.rows.iter().map(|r| r.pol.len() * 4).sum();
-            let mu_bytes: usize = t.rows.iter().map(|r| r.mu_present.as_ref().map_or(0, Vec::len)).sum();
-            (t.n(), t.pols.len(), json!(null), json!({"pol_id_bytes": pol_bytes, "mu_flag_bytes": mu_bytes}))
+            let mu_bytes: usize = t
+                .rows
+                .iter()
+                .map(|r| r.mu_present.as_ref().map_or(0, Vec::len))
+                .sum();
+            (
+                t.n(),
+                t.pols.len(),
+                json!(null),
+                json!({"pol_id_bytes": pol_bytes, "mu_flag_bytes": mu_bytes}),
+            )
         }
-        Backend::Compact(t) => (t.elms.len(), t.pols.len(), json!(t.stats), json!(t.storage())),
+        Backend::Compact(t) => (
+            t.elms.len(),
+            t.pols.len(),
+            json!(t.stats),
+            json!(t.storage()),
+        ),
     };
     let report = json!({
         "type": args[0], "engine": args[1], "threads": 1,
