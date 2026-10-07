@@ -1,0 +1,2 @@
+REPORT {"compute_seconds":706.267016432,"elements":51840,"engine":"reference","peak_rss_kib_after_compute":13688228,"polynomials":46681,"stats":null,"storage":{"mu_flag_bytes":8062312320,"pol_id_bytes":5374874880},"threads":1,"type":"E6"}
+VALIDATION_SECONDS 5.240853733
