@@ -9,6 +9,7 @@ pub mod bruhat;
 pub mod cartan;
 pub(crate) mod cartan_cyc;
 pub mod cellgraph;
+pub mod compact;
 pub mod element;
 pub mod enumerate;
 pub mod group;
