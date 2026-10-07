@@ -1,0 +1,109 @@
+name: E6 compact KL verification
+on:
+  push:
+    branches: [perf/e6-compact-kl-20261007]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: e6-compact-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify-e6:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format the new code on the remote runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add crates/rustcox-core/src/compact.rs crates/rustcox-core/src/compact/interval_cache.rs crates/rustcox-core/src/lib.rs crates/rustcox-core/tests/compact_eq.rs crates/rustcox-core/examples/compact_bench.rs
+            git diff --cached --check
+            git commit -m 'style: format compact KL backend'
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+          cargo fmt --all --check
+      - name: Compile and lint all targets
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Full reference and compact test suite
+        run: cargo test --workspace --release -- --include-ignored
+      - name: Build benchmark
+        run: cargo build --release -p rustcox-core --example compact_bench
+      - name: E6 same-runner measurements and streaming verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/benchmarks/e6-compact-20261007
+          D=docs/benchmarks/e6-compact-20261007
+          git rev-parse HEAD > "$D/tested-sha.txt"
+          { uname -a; lscpu; free -b; swapon --show; rustc -Vv; } > "$D/environment.txt"
+          for engine in reference compact interval; do
+            echo "=== E6 $engine ==="
+            cat /proc/meminfo > "$D/$engine.meminfo-before.txt"
+            set +e
+            /usr/bin/time -v -o "$D/$engine.time.txt" timeout 1200s target/release/examples/compact_bench E6 "$engine" --dump 2>"$D/$engine.log" | sha256sum > "$D/$engine.sha256"
+            status=$?
+            set -e
+            echo "$status" > "$D/$engine.exit.txt"
+            cat "$D/$engine.log"
+            cat "$D/$engine.time.txt"
+            cat "$D/$engine.sha256"
+            cat /proc/meminfo > "$D/$engine.meminfo-after.txt"
+          done
+          python3 - <<'PY'
+          import json, pathlib
+          d = pathlib.Path('docs/benchmarks/e6-compact-20261007')
+          reports = {}
+          for e in ('reference', 'compact', 'interval'):
+              text = (d / f'{e}.log').read_text()
+              line = next((x[7:] for x in text.splitlines() if x.startswith('REPORT ')), None)
+              reports[e] = {
+                  'exit': int((d / f'{e}.exit.txt').read_text()),
+                  'report': json.loads(line) if line else None,
+                  'sha256': (d / f'{e}.sha256').read_text().split()[0],
+              }
+          ok = all(x['exit'] == 0 for x in reports.values())
+          same = ok and len({x['sha256'] for x in reports.values()}) == 1
+          result = {'tested_sha': (d / 'tested-sha.txt').read_text().strip(), 'same_full_table': same, 'engines': reports}
+          if same:
+              old = reports['reference']['report']
+              for e in ('compact', 'interval'):
+                  new = reports[e]['report']
+                  result[e + '_speedup'] = old['compute_seconds'] / new['compute_seconds']
+                  result[e + '_rss_ratio'] = old['peak_rss_kib_after_compute'] / new['peak_rss_kib_after_compute']
+          (d / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PY
+      - name: Persist small benchmark evidence on this branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d docs/benchmarks/e6-compact-20261007 ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add docs/benchmarks/e6-compact-20261007
+            if ! git diff --cached --quiet; then
+              git commit -m 'test: record E6 compact benchmark evidence'
+              git push origin HEAD:${GITHUB_REF_NAME}
+            fi
+          fi
+      - name: Require successful complete-table agreement
+        run: |
+          python3 - <<'PY'
+          import json
+          with open('docs/benchmarks/e6-compact-20261007/summary.json') as f:
+              result = json.load(f)
+          assert result['same_full_table'], result
+          PY
